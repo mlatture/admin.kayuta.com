@@ -129,7 +129,7 @@
                     <div class="card-body">
 
 
-                        <div id="cartItems">
+                        <div id="cartItems" style="max-height: 400px; overflow-y: auto;">
                             <p class="text-muted text-center py-3" id="emptyCartMsg">
                                 Cart is empty.
                             </p>
@@ -153,9 +153,9 @@
                             <input type="number" class="form-control form-control-sm" id="instantDiscount" step="0.01"
                                 value="0.00">
                         </div>
-                        <div class="mb-3">
+                        <div class="mb-3" id="discountReasonContainer" style="display: none;">
                             <label class="form-label small fw-bold">Discount Reason</label>
-                            <textarea class="form-control form-control-sm" id="discountReason" rows="2" placeholder="Reason for discount..."></textarea>
+                            <input type="text" class="form-control form-control-sm" id="discountReason" placeholder="Reason for discount...">
                         </div>
 
                         <hr>
@@ -448,6 +448,14 @@
                 });
 
                 const instantDiscount = parseFloat($('#instantDiscount').val()) || 0;
+                
+                // Toggle Discount Reason visibility
+                if (instantDiscount > 0) {
+                    $('#discountReasonContainer').show();
+                } else {
+                    $('#discountReasonContainer').hide();
+                }
+
                 const couponDiscount = parseFloat(window.appliedCouponDiscount) || 0;
 
                 const totalDiscount = instantDiscount + couponDiscount;
