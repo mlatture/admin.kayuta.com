@@ -8,6 +8,14 @@
         .cart-panel {
             position: sticky;
             top: 20px;
+            max-height: calc(100vh - 40px);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .cart-panel .card-body {
+            overflow-y: auto;
+            flex: 1;
         }
 
         .cart-item {
@@ -129,7 +137,7 @@
                     <div class="card-body">
 
 
-                        <div id="cartItems" style="max-height: 400px; overflow-y: auto;">
+                        <div id="cartItems">
                             <p class="text-muted text-center py-3" id="emptyCartMsg">
                                 Cart is empty.
                             </p>

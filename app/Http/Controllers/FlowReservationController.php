@@ -441,11 +441,11 @@ class FlowReservationController extends Controller
                     } else {
                         $apiPaymentMethod = 'card';
                         $paymentData = [
-                            'cc' => [
+                           
                                 'xCardNum' => $request->xCardNum ?? '',
                                 'xExp' => $request->xExp ?? '',
                                 'cvv' => $request->cvv ?? '',
-                            ]
+                          
                         ];
                     }
                     break;
