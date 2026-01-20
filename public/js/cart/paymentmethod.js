@@ -4,6 +4,7 @@ $(document).ready(function () {
         let input = $("#orderAmountInput");
         if ($(this).val() === "GiftCard") {
             $("#gift-card-section").removeAttr("hidden");
+            $("#credit-card-section").attr("hidden", true);
             label.show().text("Payment Amount: ");
             $("#giftcardno").removeAttr("readonly").focus();
             input.attr("placeholder", "Payment Amount").removeAttr("readonly");
@@ -13,6 +14,7 @@ $(document).ready(function () {
 
         } else if ($(this).val() === "CreditCard") {
             $("#gift-card-section").attr("hidden", true);
+            $("#credit-card-section").removeAttr("hidden");
             label.show().text("Payment Amount: ");
             input.attr("placeholder", "Payment Amount").removeAttr("readonly");
 
@@ -20,6 +22,7 @@ $(document).ready(function () {
 
         } else if ($(this).val() === 'Check') {
             $("#gift-card-section").attr("hidden", true);
+            $("#credit-card-section").attr("hidden", true);
             $("#checks").attr("hidden", false);
 
 
@@ -31,6 +34,7 @@ $(document).ready(function () {
             label.show().text("Payment Amount: ");
             input.attr("placeholder", "Payment Amount").removeAttr("readonly");
             $("#gift-card-section").attr("hidden", true);
+            $("#credit-card-section").attr("hidden", true);
 
             $("#checks").attr("hidden", true);
 
@@ -396,7 +400,6 @@ $(document).ready(function () {
     }
 
     function processCreditCardPayment(
-
         customer_id,
         amount,
         totalAmount,
@@ -404,6 +407,8 @@ $(document).ready(function () {
         orderId,
         customer_email
     ) {
+        let xCardNum = $("#xCardNum").val();
+        let xExp = $("#xExp").val();
 
         $.ajax({
             url: 'https://localemv.com:8887',
@@ -414,6 +419,8 @@ $(document).ready(function () {
                 xCommand: 'cc:Sale',
                 xAmount: encodeURIComponent(amount),
                 xAllowDuplicate: encodeURIComponent('TRUE'),
+                xCardNum: encodeURIComponent(xCardNum),
+                xExp: encodeURIComponent(xExp)
             }),
             success: function (response) {
                 let jsonResponse = typeof response === 'string' ? JSON.parse(response) : response;
