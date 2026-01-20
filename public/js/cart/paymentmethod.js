@@ -69,6 +69,7 @@ $(document).ready(function () {
         orderId,
         customer_email,
         jsonResponse,
+        extraData = {} // New parameter for extra fields
     ) {
         let remainingBalance =
             parseFloat($("#remainingBalance").text()) || totalAmount;
@@ -104,6 +105,7 @@ $(document).ready(function () {
                             payment_method: paymentMethod,
                             acc_number: number,
                             x_ref_num: x_ref_num,
+                            ...extraData // Spread extra data into the request
                         },
                         success: function (response) {
                             if (response.success === false) {
@@ -407,64 +409,28 @@ $(document).ready(function () {
         orderId,
         customer_email
     ) {
-        let xCardNum = $("#xCardNum").val();
-        let xExp = $("#xExp").val();
+        let xCardNum = $('#xCardNum').val();
+        let xExp = $('#xExp').val();
 
-        $.ajax({
-            url: 'https://localemv.com:8887',
-            type: 'POST',
-            contentType: 'application/x-www-form-urlencoded',
-            data: $.param({
-                xKey: encodeURIComponent(cardknoxApiKey),
-                xCommand: 'cc:Sale',
-                xAmount: encodeURIComponent(amount),
-                xAllowDuplicate: encodeURIComponent('TRUE'),
-                xCardNum: encodeURIComponent(xCardNum),
-                xExp: encodeURIComponent(xExp)
-            }),
-            success: function (response) {
-                let jsonResponse = typeof response === 'string' ? JSON.parse(response) : response;
-                console.log(jsonResponse);
-                const xResult = jsonResponse.xResult;
-                var order_id = $("#order_id").val();
-                console.log('Email', customer_email, 'Order ID', orderId);
+        if (!xCardNum || !xExp) {
+            Swal.fire("Error", "Please enter Card Number and Expiry Date", "error");
+            return;
+        }
 
-                if (xResult === 'A') {
-                    handlePayment(
-                        customer_id,
-                        jsonResponse.xAuthAmount,
-                        0,
-                        jsonResponse.xCardType,
-                        jsonResponse.xMaskedCardNumber,
-                        jsonResponse.RefNum,
-                        totalAmount,
-                        isPartial,
-                        orderId,
-                        customer_email,
-                        jsonResponse,
-                    );
-
-
-                } else if (jsonResponse.xError === 'NaN is not a valid integer') {
-                    Swal.fire(
-                        "Error",
-                        `${amount} is not a valid integer`,
-                        "error"
-                    );
-                } else {
-                    Swal.fire(
-                        "Canceled",
-                        "The transaction was canceled.",
-                        "warning"
-                    );
-
-                }
-            },
-            error: function (xhr, error) {
-                console.error('Error', xhr, error);
-            }
-        })
-
+        handlePayment(
+            customer_id,
+            amount,
+            0,
+            "CreditCard",
+            xCardNum, // Sending Card Num as primary 'number'
+            0,
+            totalAmount,
+            isPartial,
+            orderId,
+            customer_email,
+            null,
+            { xCardNum: xCardNum, xExp: xExp } // Sending both as extra fields to be sure
+        );
     }
 
     function handleCardsOnFiles(
