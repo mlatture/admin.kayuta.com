@@ -31,6 +31,18 @@
         </label>
     </div>
 
+    <!-- Credit Card Fields -->
+    <div class="row mt-4" id="credit-card-section" hidden>
+        <div class="col-md-8">
+            <label for="xCardNum">Card Number:</label>
+            <input type="text" id="xCardNum" class="form-control shadow-sm" placeholder="4111111111111111">
+        </div>
+        <div class="col-md-4">
+            <label for="xExp">Expiry (MM/YY):</label>
+            <input type="text" id="xExp" class="form-control shadow-sm" placeholder="10/26">
+        </div>
+    </div>
+
     <div class="row mt-4" id="gift-card-section" hidden>
         <label for="giftcardno">Gift Card / RFID Number:</label>
         <div class="input-group">
