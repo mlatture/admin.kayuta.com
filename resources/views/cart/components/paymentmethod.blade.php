@@ -31,15 +31,15 @@
         </label>
     </div>
 
-    <!-- Credit Card Fields -->
+    {{-- Credit Card Section --}}
     <div class="row mt-4" id="credit-card-section" hidden>
         <div class="col-md-8">
             <label for="xCardNum">Card Number:</label>
-            <input type="text" id="xCardNum" class="form-control shadow-sm" placeholder="4111111111111111">
+            <input type="text" id="xCardNum" class="form-control shadow-sm" placeholder="4111111111111111" autocomplete="off">
         </div>
         <div class="col-md-4">
-            <label for="xExp">Expiry (MM/YY):</label>
-            <input type="text" id="xExp" class="form-control shadow-sm" placeholder="10/26">
+            <label for="xExp">Expiration:</label>
+            <input type="text" id="xExp" class="form-control shadow-sm" placeholder="MM/YY" autocomplete="off">
         </div>
     </div>
 
