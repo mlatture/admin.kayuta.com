@@ -247,23 +247,8 @@ class MoneyActionController extends Controller
                 ];
             }
 
-            // Add Credit Item if applicable
-            if ($creditAmount > 0) {
-                $cartData[] = [
-                    'id' => 'CREDIT',
-                    'name' => "Credit from Reservation #{$cartId}",
-                    'base' => -$creditAmount,
-                    'fee' => 0,
-                    'lock_fee_amount' => 0,
-                    'start_date' => null, // Credit doesn't have dates
-                    'end_date' => null,
-                    'occupants' => [],
-                    'site_lock_fee' => 'off',
-                    'is_credit' => true // Flag for UI if needed
-                ];
-            }
-
             // 4. Create Reservation Draft
+            // We use a new unique ID for the draft
             $draftId = (string) \Illuminate\Support\Str::uuid();
 
             // Calculate totals for the draft
@@ -271,34 +256,28 @@ class MoneyActionController extends Controller
             foreach ($cartData as $item) {
                 $newSubtotal += ($item['base'] + ($item['lock_fee_amount'] ?? 0));
             }
-            // Note: Since credit is a negative item in cartData, it naturally reduces newSubtotal.
-            // But usually Subtotal should be the sum of positive items.
-            // If Step 1 JS sums everything, Subtotal will be Net.
-            // This might look weird ("Subtotal: $10").
-            // But for now, let's stick to the simplest valid math.
-            // If the user wants "Subtotal $185, Credit -$175, Total $10", we would need the previous approach (Discount or Credit Field).
-            // But they explicitly rejected "Instant Discount".
-            // Legacy system used a Credit Line Item. 
-            // Let's assume this is acceptable.
 
-            $grandTotal = max(0, $newSubtotal);
+            // Apply credit as discount logic
+            // User requests: Not as a cart item, not as an instant discount input.
+            // We will store it in discount_total but allow the UI to render it as "Credit" separately.
+            $grandTotal = max(0, $newSubtotal - $creditAmount);
 
             $draft = \App\Models\ReservationDraft::create([
                 'draft_id' => $draftId,
                 'cart_data' => $cartData,
                 'subtotal' => $newSubtotal,
-                'discount_total' => 0, // No "Discount" applied
+                'discount_total' => $creditAmount, // Store credit here
                 'estimated_tax' => 0,
                 'platform_fee_total' => 0,
                 'grand_total' => $grandTotal,
-                'discount_reason' => null,
+                'discount_reason' => "Credit from Reservation #{$cartId}", // Marker for UI
                 'status' => 'pending',
                 'customer_id' => $mainRes->customernumber ?? null
             ]);
 
             // 5. Redirect to Step 1
             return redirect()->route('flow-reservation.step1', ['draft_id' => $draftId])
-                             ->with('success', "Modification started. Credit of $".number_format($creditAmount, 2)." applied as cart item.");
+                             ->with('success', "Modification started. Credit of $".number_format($creditAmount, 2)." applied.");
 
             // 4. Create Reservation Draft
             // We use a new unique ID for the draft

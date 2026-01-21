@@ -158,13 +158,22 @@
                         </div>
                          <div class="mb-3">
                             <label class="form-label small fw-bold">Instant Discount ($)</label>
-                            <input type="number" class="form-control form-control-sm" id="instantDiscount" step="0.01"
-                                value="{{ $draft ? number_format($draft->discount_total, 2, '.', '') : '0.00' }}">
+                            @php
+                                $isCredit = $draft && str_contains($draft->discount_reason, 'Credit from');
+                                $creditAmount = $isCredit ? $draft->discount_total : 0;
+                                // If user saves ON TOP of credit, we might need to handle matching. 
+                                // For now, if it's a fresh credit draft, input shows 0.
+                                $manualDiscount = $draft && !$isCredit ? $draft->discount_total : 0;
+                            @endphp
+                            <input type="number" class="form-control form-control-sm" id="instantDiscount" step="0.01" value="{{ number_format($manualDiscount, 2, '.', '') }}">
+                             <!-- Hidden inputs to persist credit state -->
+                            <input type="hidden" id="modificationCredit" value="{{ number_format($creditAmount, 2, '.', '') }}">
+                            <input type="hidden" id="modificationReason" value="{{ $isCredit ? $draft->discount_reason : '' }}">
                         </div>
-                        <div class="mb-3" id="discountReasonContainer" style="display: {{ ($draft && $draft->discount_total > 0) ? 'block' : 'none' }};">
+                        <div class="mb-3" id="discountReasonContainer" style="display: {{ ($manualDiscount > 0) ? 'block' : 'none' }};">
                             <label class="form-label small fw-bold">Discount Reason</label>
                             <input type="text" class="form-control form-control-sm" id="discountReason" placeholder="Reason for discount..."
-                                value="{{ $draft ? $draft->discount_reason : '' }}">
+                                value="{{ ($draft && !$isCredit) ? $draft->discount_reason : '' }}">
                         </div>
 
                         <hr>
@@ -173,6 +182,10 @@
                         <div class="d-flex justify-content-between mb-2">
                             <span>Subtotal</span>
                             <span id="subtotalDisplay">$0.00</span>
+                        </div>
+                        <div class="d-flex justify-content-between mb-2 text-primary" id="creditRow" style="display: none;">
+                            <span>Credit Applied</span>
+                            <span id="creditDisplay">-$0.00</span>
                         </div>
                         <div class="d-flex justify-content-between mb-2 text-danger">
                             <span>Discounts</span>
@@ -211,7 +224,13 @@
             // Platform fee removed to match manage/reservation logic
             // let platformFee = 0; 
             // Tax calculation removed as per user request
+            
+            // Check for existing credit from server render
+            const initialCredit = parseFloat($('#modificationCredit').val()) || 0;
+            const initialCreditReason = $('#modificationReason').val();
 
+            // ... (search/flatpickr logic remains same) ...
+            
             // Perform search function (Debounced for text input)
             function performSearch() {
                 const startDate = $('#startDate').val();
@@ -220,8 +239,6 @@
                 if (!startDate || !endDate) return;
 
                 const tbody = $('#resultsTable tbody');
-                // Optional: Show loading state in table
-                // tbody.html('<tr><td colspan="7" class="text-center py-5"><i class="fas fa-spinner fa-spin"></i> Searching...</td></tr>');
 
                 $.get("{{ route('flow-reservation.search') }}", $('#searchForm').serialize())
                     .done(function(res) {
@@ -310,13 +327,11 @@
                         }
                     })
                     .fail(function() {
-                        // alert('An error occurred while searching.'); 
-                        // Silent fail or toast on auto-search is often better than alerting
                         console.error('Search failed');
                     });
             }
 
-            // Initialize Flatpickr
+            // Initialize Flatpickr and Listeners
             const fp = flatpickr("#dateRange", {
                 mode: "range",
                 dateFormat: "Y-m-d",
@@ -330,19 +345,13 @@
                 }
             });
 
-            // Auto Search Listeners
             $('#searchForm select').on('change', performSearch);
             $('#searchForm input[name="rig_length"]').on('change keyup', function() {
-                // Simple debounce could go here if needed, but keyup might be too aggressive without it. 
-                // Let's stick to 'change' or a small timeout if keyup is desired.
-                // For now, 'change' covers blur/enter which is standard for "refresh on change".
-                // If "typing" needs to trigger it, we need a timeout.
                 clearTimeout(window.searchTimeout);
                 window.searchTimeout = setTimeout(performSearch, 500);
             });
 
-            // Handle Site Lock Toggle for Price Update
-            $(document).on('change', '.site-lock-toggle', function() {
+             $(document).on('change', '.site-lock-toggle', function() {
                 const $row = $(this).closest('tr');
                 const fee = parseFloat($(this).data('fee'));
                 const isChecked = $(this).is(':checked');
@@ -358,7 +367,7 @@
 
             // Add to Cart
             $(document).on('click', '.add-to-cart', function() {
-                const $row = $(this).closest('tr');
+                 const $row = $(this).closest('tr');
                 const adults = parseInt($row.find('.adults').val()) || 0;
                 const children = parseInt($row.find('.children').val()) || 0;
                 const siteLockChecked = $row.find('.site-lock-toggle').is(':checked');
@@ -386,7 +395,7 @@
                 $(this).prop('disabled', true).text('Added');
             });
 
-            // Remove from Cart
+             // Remove from Cart
             $(document).on('click', '.remove-item', function() {
                 const index = $(this).data('index');
                 const siteId = cart[index].id;
@@ -397,9 +406,6 @@
 
                 updateCartUI();
             });
-
-            // Recalculate on manual discount change
-            $('#instantDiscount').on('input', updateTotals);
 
             function updateCartUI() {
                 const $container = $('#cartItems');
@@ -452,8 +458,7 @@
             function updateTotals() {
                 let subtotal = 0;
                 cart.forEach(item => {
-                                        subtotal += (parseFloat(item.base) || 0) + (parseFloat(item.lock_fee_amount) || 0) + (parseFloat(item.fee) || 0);
-
+                     subtotal += (parseFloat(item.base) || 0) + (parseFloat(item.lock_fee_amount) || 0) + (parseFloat(item.fee) || 0);
                 });
 
                 const instantDiscount = parseFloat($('#instantDiscount').val()) || 0;
@@ -467,22 +472,31 @@
 
                 const couponDiscount = parseFloat(window.appliedCouponDiscount) || 0;
 
-                const totalDiscount = instantDiscount + couponDiscount;
+                // Add Credit from database if present
+                const storedCredit = initialCredit;
+                
+                if (storedCredit > 0) {
+                    $('#creditRow').show().find('#creditDisplay').text('-$' + storedCredit.toFixed(2));
+                } else {
+                    $('#creditRow').hide();
+                }
+
+                const totalDiscount = instantDiscount + couponDiscount + storedCredit;
                 const subtotalAfterDiscount = Math.max(0, subtotal - totalDiscount);
                 // Tax calculation removed as per user request
                 const tax = 0;
                 const grandTotal = subtotalAfterDiscount; // No tax added
 
                 $('#subtotalDisplay').text('$' + subtotal.toFixed(2));
-                $('#discountsDisplay').text('-$' + totalDiscount.toFixed(2));
+                $('#discountsDisplay').text('-$' + (instantDiscount + couponDiscount).toFixed(2));
                 $('#taxDisplay').text('$' + tax.toFixed(2));
                 $('#grandTotalDisplay').text('$' + grandTotal.toFixed(2));
 
                 window.currentTotals = {
                     subtotal: subtotal,
-                    discount_total: totalDiscount,
-                    estimated_tax: 0, // Tax removed
-                    platform_fee_total: 0, // cart.length * platformFee (Removed)
+                    discount_total: totalDiscount, // Includes credit
+                    estimated_tax: 0,
+                    platform_fee_total: 0,
                     grand_total: grandTotal
                 };
             }
@@ -492,11 +506,21 @@
                 const $btn = $(this);
                 $btn.prop('disabled', true).text('Saving Draft...');
 
+                // We need to merge the stored reason with any new manual reason
+                let finalReason = '';
+                const manualReason = $('#discountReason').val();
+                if (initialCredit > 0 && initialCreditReason) {
+                     finalReason = initialCreditReason;
+                     if (manualReason) finalReason += ' + ' + manualReason;
+                } else {
+                    finalReason = manualReason;
+                }
+
                 $.post("{{ route('flow-reservation.save-draft') }}", {
                         _token: "{{ csrf_token() }}",
                         cart_data: cart,
                         totals: window.currentTotals,
-                        discount_reason: $('#discountReason').val(),
+                        discount_reason: finalReason,
                         coupon_code: window.appliedCouponCode || ''
                     })
                     .done(function(res) {
