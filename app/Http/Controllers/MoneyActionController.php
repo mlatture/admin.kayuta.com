@@ -195,7 +195,48 @@ class MoneyActionController extends Controller
             $mainRes = $reservations->first();
             $cartId = $mainRes->cartid;
 
-            // 4. Create Reservation Draft
+            // 3. Build Cart Data from existing reservations
+            $cartData = [];
+            foreach ($reservations as $res) {
+                // Determine site lock fee status
+                $siteLockStatus = $res->sitelock ? 'on' : 'off';
+                
+                $siteLockFeeAmount = 0;
+                if ($siteLockStatus === 'on') {
+                     $siteLockFeeAmount = (float) (\App\Models\BusinessSettings::where('type', 'site_lock_fee')->value('value') ?? 0);
+                }
+
+                // Safe Site Name Retrieval
+                $siteName = $res->siteid; // Default
+                if ($res->site) {
+                    $siteName = $res->site->sitename ?? $res->site->name ?? $res->siteid;
+                }
+
+                // Safe Base Price Retrieval
+                $basePrice = (float) $res->base;
+                if ($basePrice <= 0) {
+                    $basePrice = (float) $res->subtotal;
+                }
+                if ($basePrice <= 0) {
+                    $basePrice = (float) $res->total; 
+                }
+
+                $cartData[] = [
+                    'id' => (string) $res->siteid,
+                    'name' => (string) $siteName,
+                    'base' => $basePrice,
+                    'fee' => 0, 
+                    'lock_fee_amount' => $siteLockFeeAmount,
+                    'start_date' => $res->cid ? $res->cid->format('Y-m-d') : null,
+                    'end_date' => $res->cod ? $res->cod->format('Y-m-d') : null,
+                    'occupants' => [
+                        'adults' => $res->adults ?? 2,
+                        'children' => $res->children ?? 0,
+                        'pets' => $res->pets ?? 0
+                    ],
+                    'site_lock_fee' => $siteLockStatus
+                ];
+            }
             // We use a new unique ID for the draft
             $draftId = (string) \Illuminate\Support\Str::uuid();
 
