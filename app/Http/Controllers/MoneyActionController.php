@@ -178,13 +178,13 @@ class MoneyActionController extends Controller
     public function startModification(Request $request, $id)
     {
         try {
-            // 1. Load existing reservation(s) by cartid (some carts have multiple sites)
-            $reservations = Reservation::where('cartid', $id)->get();
+            // 1. Load existing reservation(s) by cartid
+            $reservations = Reservation::where('cartid', $id)->with('site')->get();
             if ($reservations->isEmpty()) {
                 // Try finding by single ID if cartid not found
                 $singleRes = Reservation::find($id);
                 if ($singleRes) {
-                    $reservations = Reservation::where('cartid', $singleRes->cartid)->get();
+                    $reservations = Reservation::where('cartid', $singleRes->cartid)->with('site')->get();
                 }
             }
 
@@ -196,61 +196,78 @@ class MoneyActionController extends Controller
             $cartId = $mainRes->cartid;
 
             // 2. Calculate Net Paid Amount (Credit to be applied)
-            // Logic from show.blade.php ledger
             $payments = Payment::where('cartid', $cartId)->get();
             $additionalPayments = AdditionalPayment::where('cartid', $cartId)->get();
             $refunds = Refund::where('cartid', $cartId)->get();
 
             $totalPaid = $payments->sum('payment') + $additionalPayments->sum('total');
             $totalRefunded = $refunds->sum('amount');
-            $creditAmount = $totalPaid - $totalRefunded;
+            $creditAmount = max(0, $totalPaid - $totalRefunded);
 
-            if ($creditAmount < 0) $creditAmount = 0;
+            // 3. Build Cart Data from existing reservations
+            $cartData = [];
+            foreach ($reservations as $res) {
+                // Determine site lock fee status
+                // Assuming 'sitelock' is 1/0 or 'on'/'off'. Database usually stores integer or string.
+                // Based on Step 1 JS, it expects 'on' or 'off'.
+                // Let's check typical values. Often stored as 1.
+                $siteLockStatus = $res->sitelock ? 'on' : 'off';
+                
+                // We need the fee amount. In legacy, might be calculated. 
+                // For now, if locked, we should perhaps fetch the current fee setting or use 0 if unknown.
+                // step1.blade.php fetches it from API search, here we are reconstructing.
+                // We can set it to the standard fee if 'on'.
+                $siteLockFeeAmount = 0;
+                if ($siteLockStatus === 'on') {
+                     $siteLockFeeAmount = (float) (\App\Models\BusinessSettings::where('type', 'site_lock_fee')->value('value') ?? 0);
+                }
 
-            // 3. Clear existing cart for guest/system
-            // Carts are currently linked to customernumber in CartReservation
-            CartReservation::where('customernumber', $mainRes->customernumber)->delete();
+                $cartData[] = [
+                    'id' => (string) $res->siteid,
+                    'name' => $res->site ? $res->site->name : $res->siteid,
+                    'base' => (float) $res->base, // Or $res->total if base not reliable? Usually 'base' is the rent.
+                    'fee' => 0, // Platform fee
+                    'lock_fee_amount' => $siteLockFeeAmount,
+                    'start_date' => $res->cid->format('Y-m-d'),
+                    'end_date' => $res->cod->format('Y-m-d'),
+                    'occupants' => [
+                        'adults' => $res->adults ?? 2,
+                        'children' => $res->children ?? 0,
+                        'pets' => $res->pets ?? 0
+                    ],
+                    'site_lock_fee' => $siteLockStatus
+                ];
+            }
 
-            // 4. Add Credit Line Item to Cart
-            $modCartId = '';
-            do {
-                $modCartId = 'MOD-' . strtoupper(bin2hex(random_bytes(3)));
-            } while (Reservation::where('cartid', $modCartId)->exists());
+            // 4. Create Reservation Draft
+            // We use a new unique ID for the draft
+            $draftId = (string) \Illuminate\Support\Str::uuid();
 
-            CartReservation::create([
-                'customernumber' => $mainRes->customernumber,
-                'cid' => $mainRes->cid,
-                'cod' => $mainRes->cod,
-                'cartid' => $modCartId, // Temporary cart ID for the process
-                'siteid' => 'CREDIT',
-                'description' => "Credit from Reservation #{$cartId}",
-                'base' => -$creditAmount,
-                'subtotal' => -$creditAmount,
-                'total' => -$creditAmount,
-                'taxrate' => 0,
-                'totaltax' => 0,
-                'nights' => 0,
-                'rid' => $cartId, // Using rid to store originating cartid for reference at checkout
-                'holduntil' => now()->addHours(2),
-                'email' => $mainRes->email
+            // Calculate totals for the draft
+            $newSubtotal = 0;
+            foreach ($cartData as $item) {
+                $newSubtotal += ($item['base'] + $item['lock_fee_amount']);
+            }
+
+            // Apply credit as discount
+            $grandTotal = max(0, $newSubtotal - $creditAmount);
+
+            $draft = \App\Models\ReservationDraft::create([
+                'draft_id' => $draftId,
+                'cart_data' => $cartData,
+                'subtotal' => $newSubtotal,
+                'discount_total' => $creditAmount, // Pre-fill discount with credit
+                'estimated_tax' => 0,
+                'platform_fee_total' => 0,
+                'grand_total' => $grandTotal,
+                'discount_reason' => "Credit from Reservation #{$cartId}",
+                'status' => 'pending',
+                'customer_id' => $mainRes->customernumber ?? null // Bind to existing customer if known
             ]);
 
-            // Log modification start
-            app(ReservationLogService::class)->log(
-                $mainRes->id,
-                'modification_started',
-                null,
-                ['credit_amount' => $creditAmount, 'cart_id' => $cartId],
-                "Modification process started. Credit of $".number_format($creditAmount, 2)." applied."
-            );
-
-            // 5. Redirect to Search / Availability page with pre-fills
-            return redirect()->route('admin.reservation_mgmt.index', [
-                'admin' => auth()->id(),
-                'cid' => $mainRes->cid->format('Y-m-d'),
-                'cod' => $mainRes->cod->format('Y-m-d'),
-                'cart_id' => $modCartId
-            ])->with('success', 'Modification initiated. Credit of $' . number_format($creditAmount, 2) . ' applied to cart.');
+            // 5. Redirect to Step 1
+            return redirect()->route('flow-reservation.step1', ['draft_id' => $draftId])
+                             ->with('success', "Modification started. Credit of $".number_format($creditAmount, 2)." applied.");
 
         } catch (\Exception $e) {
             Log::error("Modification Start Failed: " . $e->getMessage());
