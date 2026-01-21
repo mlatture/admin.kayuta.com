@@ -159,11 +159,12 @@
                          <div class="mb-3">
                             <label class="form-label small fw-bold">Instant Discount ($)</label>
                             <input type="number" class="form-control form-control-sm" id="instantDiscount" step="0.01"
-                                value="0.00">
+                                value="{{ $draft ? number_format($draft->discount_total, 2, '.', '') : '0.00' }}">
                         </div>
-                        <div class="mb-3" id="discountReasonContainer" style="display: none;">
+                        <div class="mb-3" id="discountReasonContainer" style="display: {{ ($draft && $draft->discount_total > 0) ? 'block' : 'none' }};">
                             <label class="form-label small fw-bold">Discount Reason</label>
-                            <input type="text" class="form-control form-control-sm" id="discountReason" placeholder="Reason for discount...">
+                            <input type="text" class="form-control form-control-sm" id="discountReason" placeholder="Reason for discount..."
+                                value="{{ $draft ? $draft->discount_reason : '' }}">
                         </div>
 
                         <hr>
