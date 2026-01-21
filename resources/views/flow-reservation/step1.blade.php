@@ -156,24 +156,14 @@
                                 <button class="btn btn-outline-secondary" type="button" id="applyCoupon">Apply</button>
                             </div>
                         </div>
-                         <div class="mb-3">
-                            <label class="form-label small fw-bold">Instant Discount ($)</label>
-                            @php
-                                $isCredit = $draft && str_contains($draft->discount_reason, 'Credit from');
-                                $creditAmount = $isCredit ? $draft->discount_total : 0;
-                                // If user saves ON TOP of credit, we might need to handle matching. 
-                                // For now, if it's a fresh credit draft, input shows 0.
-                                $manualDiscount = $draft && !$isCredit ? $draft->discount_total : 0;
-                            @endphp
-                            <input type="number" class="form-control form-control-sm" id="instantDiscount" step="0.01" value="{{ number_format($manualDiscount, 2, '.', '') }}">
-                             <!-- Hidden inputs to persist credit state -->
-                            <input type="hidden" id="modificationCredit" value="{{ number_format($creditAmount, 2, '.', '') }}">
-                            <input type="hidden" id="modificationReason" value="{{ $isCredit ? $draft->discount_reason : '' }}">
+                             <label class="form-label small fw-bold">Instant Discount ($)</label>
+                            <input type="number" class="form-control form-control-sm" id="instantDiscount" step="0.01"
+                                value="{{ $draft ? number_format($draft->discount_total, 2, '.', '') : '0.00' }}">
                         </div>
-                        <div class="mb-3" id="discountReasonContainer" style="display: {{ ($manualDiscount > 0) ? 'block' : 'none' }};">
+                        <div class="mb-3" id="discountReasonContainer" style="display: {{ ($draft && $draft->discount_total > 0) ? 'block' : 'none' }};">
                             <label class="form-label small fw-bold">Discount Reason</label>
                             <input type="text" class="form-control form-control-sm" id="discountReason" placeholder="Reason for discount..."
-                                value="{{ ($draft && !$isCredit) ? $draft->discount_reason : '' }}">
+                                value="{{ $draft ? $draft->discount_reason : '' }}">
                         </div>
 
                         <hr>
@@ -182,10 +172,6 @@
                         <div class="d-flex justify-content-between mb-2">
                             <span>Subtotal</span>
                             <span id="subtotalDisplay">$0.00</span>
-                        </div>
-                        <div class="d-flex justify-content-between mb-2 text-primary" id="creditRow" style="display: none;">
-                            <span>Credit Applied</span>
-                            <span id="creditDisplay">-$0.00</span>
                         </div>
                         <div class="d-flex justify-content-between mb-2 text-danger">
                             <span>Discounts</span>
@@ -224,12 +210,6 @@
             // Platform fee removed to match manage/reservation logic
             // let platformFee = 0; 
             // Tax calculation removed as per user request
-            
-            // Check for existing credit from server render
-            const initialCredit = parseFloat($('#modificationCredit').val()) || 0;
-            const initialCreditReason = $('#modificationReason').val();
-
-            // ... (search/flatpickr logic remains same) ...
             
             // Perform search function (Debounced for text input)
             function performSearch() {
@@ -472,31 +452,22 @@
 
                 const couponDiscount = parseFloat(window.appliedCouponDiscount) || 0;
 
-                // Add Credit from database if present
-                const storedCredit = initialCredit;
-                
-                if (storedCredit > 0) {
-                    $('#creditRow').show().find('#creditDisplay').text('-$' + storedCredit.toFixed(2));
-                } else {
-                    $('#creditRow').hide();
-                }
-
-                const totalDiscount = instantDiscount + couponDiscount + storedCredit;
+                const totalDiscount = instantDiscount + couponDiscount;
                 const subtotalAfterDiscount = Math.max(0, subtotal - totalDiscount);
                 // Tax calculation removed as per user request
                 const tax = 0;
                 const grandTotal = subtotalAfterDiscount; // No tax added
 
                 $('#subtotalDisplay').text('$' + subtotal.toFixed(2));
-                $('#discountsDisplay').text('-$' + (instantDiscount + couponDiscount).toFixed(2));
+                $('#discountsDisplay').text('-$' + totalDiscount.toFixed(2));
                 $('#taxDisplay').text('$' + tax.toFixed(2));
                 $('#grandTotalDisplay').text('$' + grandTotal.toFixed(2));
 
                 window.currentTotals = {
                     subtotal: subtotal,
-                    discount_total: totalDiscount, // Includes credit
-                    estimated_tax: 0,
-                    platform_fee_total: 0,
+                    discount_total: totalDiscount,
+                    estimated_tax: 0, // Tax removed
+                    platform_fee_total: 0, // cart.length * platformFee (Removed)
                     grand_total: grandTotal
                 };
             }
@@ -506,21 +477,11 @@
                 const $btn = $(this);
                 $btn.prop('disabled', true).text('Saving Draft...');
 
-                // We need to merge the stored reason with any new manual reason
-                let finalReason = '';
-                const manualReason = $('#discountReason').val();
-                if (initialCredit > 0 && initialCreditReason) {
-                     finalReason = initialCreditReason;
-                     if (manualReason) finalReason += ' + ' + manualReason;
-                } else {
-                    finalReason = manualReason;
-                }
-
                 $.post("{{ route('flow-reservation.save-draft') }}", {
                         _token: "{{ csrf_token() }}",
                         cart_data: cart,
                         totals: window.currentTotals,
-                        discount_reason: finalReason,
+                        discount_reason: $('#discountReason').val(),
                         coupon_code: window.appliedCouponCode || ''
                     })
                     .done(function(res) {

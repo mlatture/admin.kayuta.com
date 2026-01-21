@@ -195,58 +195,6 @@ class MoneyActionController extends Controller
             $mainRes = $reservations->first();
             $cartId = $mainRes->cartid;
 
-            // 2. Calculate Net Paid Amount (Credit to be applied)
-            $payments = Payment::where('cartid', $cartId)->get();
-            $additionalPayments = AdditionalPayment::where('cartid', $cartId)->get();
-            $refunds = Refund::where('cartid', $cartId)->get();
-
-            $totalPaid = $payments->sum('payment') + $additionalPayments->sum('total');
-            $totalRefunded = $refunds->sum('amount');
-            $creditAmount = max(0, $totalPaid - $totalRefunded);
-
-            // 3. Build Cart Data from existing reservations
-            $cartData = [];
-            foreach ($reservations as $res) {
-                // Determine site lock fee status
-                $siteLockStatus = $res->sitelock ? 'on' : 'off';
-                
-                $siteLockFeeAmount = 0;
-                if ($siteLockStatus === 'on') {
-                     $siteLockFeeAmount = (float) (\App\Models\BusinessSettings::where('type', 'site_lock_fee')->value('value') ?? 0);
-                }
-
-                // Safe Site Name Retrieval
-                $siteName = $res->siteid; // Default
-                if ($res->site) {
-                    $siteName = $res->site->sitename ?? $res->site->name ?? $res->siteid;
-                }
-
-                // Safe Base Price Retrieval
-                $basePrice = (float) $res->base;
-                if ($basePrice <= 0) {
-                    $basePrice = (float) $res->subtotal;
-                }
-                if ($basePrice <= 0) {
-                    $basePrice = (float) $res->total; 
-                }
-
-                $cartData[] = [
-                    'id' => (string) $res->siteid,
-                    'name' => (string) $siteName,
-                    'base' => $basePrice,
-                    'fee' => 0, 
-                    'lock_fee_amount' => $siteLockFeeAmount,
-                    'start_date' => $res->cid ? $res->cid->format('Y-m-d') : null,
-                    'end_date' => $res->cod ? $res->cod->format('Y-m-d') : null,
-                    'occupants' => [
-                        'adults' => $res->adults ?? 2,
-                        'children' => $res->children ?? 0,
-                        'pets' => $res->pets ?? 0
-                    ],
-                    'site_lock_fee' => $siteLockStatus
-                ];
-            }
-
             // 4. Create Reservation Draft
             // We use a new unique ID for the draft
             $draftId = (string) \Illuminate\Support\Str::uuid();
@@ -257,57 +205,27 @@ class MoneyActionController extends Controller
                 $newSubtotal += ($item['base'] + ($item['lock_fee_amount'] ?? 0));
             }
 
-            // Apply credit as discount logic
-            // User requests: Not as a cart item, not as an instant discount input.
-            // We will store it in discount_total but allow the UI to render it as "Credit" separately.
-            $grandTotal = max(0, $newSubtotal - $creditAmount);
+            // User requested NO automatic credit. Grand Total = Subtotal.
+            $grandTotal = max(0, $newSubtotal);
 
             $draft = \App\Models\ReservationDraft::create([
                 'draft_id' => $draftId,
                 'cart_data' => $cartData,
                 'subtotal' => $newSubtotal,
-                'discount_total' => $creditAmount, // Store credit here
+                'discount_total' => 0, 
                 'estimated_tax' => 0,
                 'platform_fee_total' => 0,
                 'grand_total' => $grandTotal,
-                'discount_reason' => "Credit from Reservation #{$cartId}", // Marker for UI
+                'discount_reason' => null,
                 'status' => 'pending',
                 'customer_id' => $mainRes->customernumber ?? null
             ]);
 
             // 5. Redirect to Step 1
             return redirect()->route('flow-reservation.step1', ['draft_id' => $draftId])
-                             ->with('success', "Modification started. Credit of $".number_format($creditAmount, 2)." applied.");
+                             ->with('success', "Modification started.");
 
-            // 4. Create Reservation Draft
-            // We use a new unique ID for the draft
-            $draftId = (string) \Illuminate\Support\Str::uuid();
 
-            // Calculate totals for the draft
-            $newSubtotal = 0;
-            foreach ($cartData as $item) {
-                $newSubtotal += ($item['base'] + $item['lock_fee_amount']);
-            }
-
-            // Apply credit as discount
-            $grandTotal = max(0, $newSubtotal - $creditAmount);
-
-            $draft = \App\Models\ReservationDraft::create([
-                'draft_id' => $draftId,
-                'cart_data' => $cartData,
-                'subtotal' => $newSubtotal,
-                'discount_total' => $creditAmount, // Pre-fill discount with credit
-                'estimated_tax' => 0,
-                'platform_fee_total' => 0,
-                'grand_total' => $grandTotal,
-                'discount_reason' => "Credit from Reservation #{$cartId}",
-                'status' => 'pending',
-                'customer_id' => $mainRes->customernumber ?? null // Bind to existing customer if known
-            ]);
-
-            // 5. Redirect to Step 1
-            return redirect()->route('flow-reservation.step1', ['draft_id' => $draftId])
-                             ->with('success', "Modification started. Credit of $".number_format($creditAmount, 2)." applied.");
 
         } catch (\Exception $e) {
             Log::error("Modification Start Failed: " . $e->getMessage());
