@@ -208,28 +208,48 @@ class MoneyActionController extends Controller
             $cartData = [];
             foreach ($reservations as $res) {
                 // Determine site lock fee status
-                // Assuming 'sitelock' is 1/0 or 'on'/'off'. Database usually stores integer or string.
-                // Based on Step 1 JS, it expects 'on' or 'off'.
-                // Let's check typical values. Often stored as 1.
                 $siteLockStatus = $res->sitelock ? 'on' : 'off';
                 
-                // We need the fee amount. In legacy, might be calculated. 
-                // For now, if locked, we should perhaps fetch the current fee setting or use 0 if unknown.
-                // step1.blade.php fetches it from API search, here we are reconstructing.
-                // We can set it to the standard fee if 'on'.
                 $siteLockFeeAmount = 0;
                 if ($siteLockStatus === 'on') {
                      $siteLockFeeAmount = (float) (\App\Models\BusinessSettings::where('type', 'site_lock_fee')->value('value') ?? 0);
                 }
 
+                // Safe Site Name Retrieval
+                // Try relation 'site' -> 'sitename' (from Site model) or 'name' (if alias/accessor exists)
+                // Fallback to res->siteid
+                $siteName = $res->siteid; // Default
+                if ($res->site) {
+                    $siteName = $res->site->sitename ?? $res->site->name ?? $res->siteid;
+                }
+
+                // Safe Base Price Retrieval
+                // If base is 0, it might be stored in 'subtotal' or 'total'
+                // Logic: if base > 0 use it. Else if subtotal > 0 use it. Else total.
+                $basePrice = (float) $res->base;
+                if ($basePrice <= 0) {
+                    $basePrice = (float) $res->subtotal;
+                }
+                if ($basePrice <= 0) {
+                    $basePrice = (float) $res->total; 
+                }
+                // If we used total/subtotal, we might be including site lock fee if it was merged?
+                // Usually base is separate. If base was 0, likely it wasn't populated correctly in legacy.
+                // If we really want to exclude site lock fee from "base", we should subtract it if we used a total field.
+                
+                // Correction: If we used total and lock fee is on, technically base = total - lock_fee
+                // But only if total actually included it. 
+                // Let's assume subtotal is the safest fallback for "Rent".
+                
+
                 $cartData[] = [
                     'id' => (string) $res->siteid,
-                    'name' => $res->site ? $res->site->name : $res->siteid,
-                    'base' => (float) $res->base, // Or $res->total if base not reliable? Usually 'base' is the rent.
+                    'name' => (string) $siteName,
+                    'base' => $basePrice,
                     'fee' => 0, // Platform fee
                     'lock_fee_amount' => $siteLockFeeAmount,
-                    'start_date' => $res->cid->format('Y-m-d'),
-                    'end_date' => $res->cod->format('Y-m-d'),
+                    'start_date' => $res->cid ? $res->cid->format('Y-m-d') : null,
+                    'end_date' => $res->cod ? $res->cod->format('Y-m-d') : null,
                     'occupants' => [
                         'adults' => $res->adults ?? 2,
                         'children' => $res->children ?? 0,
