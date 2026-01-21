@@ -216,16 +216,12 @@ class MoneyActionController extends Controller
                 }
 
                 // Safe Site Name Retrieval
-                // Try relation 'site' -> 'sitename' (from Site model) or 'name' (if alias/accessor exists)
-                // Fallback to res->siteid
                 $siteName = $res->siteid; // Default
                 if ($res->site) {
                     $siteName = $res->site->sitename ?? $res->site->name ?? $res->siteid;
                 }
 
                 // Safe Base Price Retrieval
-                // If base is 0, it might be stored in 'subtotal' or 'total'
-                // Logic: if base > 0 use it. Else if subtotal > 0 use it. Else total.
                 $basePrice = (float) $res->base;
                 if ($basePrice <= 0) {
                     $basePrice = (float) $res->subtotal;
@@ -233,20 +229,12 @@ class MoneyActionController extends Controller
                 if ($basePrice <= 0) {
                     $basePrice = (float) $res->total; 
                 }
-                // If we used total/subtotal, we might be including site lock fee if it was merged?
-                // Usually base is separate. If base was 0, likely it wasn't populated correctly in legacy.
-                // If we really want to exclude site lock fee from "base", we should subtract it if we used a total field.
-                
-                // Correction: If we used total and lock fee is on, technically base = total - lock_fee
-                // But only if total actually included it. 
-                // Let's assume subtotal is the safest fallback for "Rent".
-                
 
                 $cartData[] = [
                     'id' => (string) $res->siteid,
                     'name' => (string) $siteName,
                     'base' => $basePrice,
-                    'fee' => 0, // Platform fee
+                    'fee' => 0, 
                     'lock_fee_amount' => $siteLockFeeAmount,
                     'start_date' => $res->cid ? $res->cid->format('Y-m-d') : null,
                     'end_date' => $res->cod ? $res->cod->format('Y-m-d') : null,
@@ -258,6 +246,59 @@ class MoneyActionController extends Controller
                     'site_lock_fee' => $siteLockStatus
                 ];
             }
+
+            // Add Credit Item if applicable
+            if ($creditAmount > 0) {
+                $cartData[] = [
+                    'id' => 'CREDIT',
+                    'name' => "Credit from Reservation #{$cartId}",
+                    'base' => -$creditAmount,
+                    'fee' => 0,
+                    'lock_fee_amount' => 0,
+                    'start_date' => null, // Credit doesn't have dates
+                    'end_date' => null,
+                    'occupants' => [],
+                    'site_lock_fee' => 'off',
+                    'is_credit' => true // Flag for UI if needed
+                ];
+            }
+
+            // 4. Create Reservation Draft
+            $draftId = (string) \Illuminate\Support\Str::uuid();
+
+            // Calculate totals for the draft
+            $newSubtotal = 0;
+            foreach ($cartData as $item) {
+                $newSubtotal += ($item['base'] + ($item['lock_fee_amount'] ?? 0));
+            }
+            // Note: Since credit is a negative item in cartData, it naturally reduces newSubtotal.
+            // But usually Subtotal should be the sum of positive items.
+            // If Step 1 JS sums everything, Subtotal will be Net.
+            // This might look weird ("Subtotal: $10").
+            // But for now, let's stick to the simplest valid math.
+            // If the user wants "Subtotal $185, Credit -$175, Total $10", we would need the previous approach (Discount or Credit Field).
+            // But they explicitly rejected "Instant Discount".
+            // Legacy system used a Credit Line Item. 
+            // Let's assume this is acceptable.
+
+            $grandTotal = max(0, $newSubtotal);
+
+            $draft = \App\Models\ReservationDraft::create([
+                'draft_id' => $draftId,
+                'cart_data' => $cartData,
+                'subtotal' => $newSubtotal,
+                'discount_total' => 0, // No "Discount" applied
+                'estimated_tax' => 0,
+                'platform_fee_total' => 0,
+                'grand_total' => $grandTotal,
+                'discount_reason' => null,
+                'status' => 'pending',
+                'customer_id' => $mainRes->customernumber ?? null
+            ]);
+
+            // 5. Redirect to Step 1
+            return redirect()->route('flow-reservation.step1', ['draft_id' => $draftId])
+                             ->with('success', "Modification started. Credit of $".number_format($creditAmount, 2)." applied as cart item.");
 
             // 4. Create Reservation Draft
             // We use a new unique ID for the draft
