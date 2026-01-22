@@ -14,9 +14,7 @@ return new class extends Migration
     public function up()
     {
         Schema::table('reservation_drafts', function (Blueprint $table) {
-            $table->boolean('is_modification')->default(false);
-            $table->json('original_reservation_ids')->nullable();
-            $table->decimal('credit_amount', 10, 2)->default(0);
+            //
         });
     }
 
@@ -28,7 +26,7 @@ return new class extends Migration
     public function down()
     {
         Schema::table('reservation_drafts', function (Blueprint $table) {
-            $table->dropColumn(['is_modification', 'original_reservation_ids', 'credit_amount']);
+            //
         });
     }
 };
