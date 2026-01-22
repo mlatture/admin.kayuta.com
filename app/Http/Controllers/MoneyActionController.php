@@ -218,11 +218,12 @@ class MoneyActionController extends Controller
 
                  $itemSubtotal = (float) $res->subtotal;
                  $itemTotal = (float) $res->total;
+                 $itemBase = (float) ($res->base ?? $res->subtotal);
 
                  $cartData[] = [
                     'id' => (string) $res->siteid,
                     'name' => (string) $siteName,
-                    'base' => (float) $res->base,
+                    'base' => $itemBase,
                     'fee' => 0, // platform fee
                     'lock_fee_amount' => $siteLockFeeAmount,
                     'start_date' => $res->cid instanceof \Carbon\Carbon ? $res->cid->format('Y-m-d') : $res->cid,
