@@ -181,6 +181,12 @@
                             <span>Estimated Tax</span>
                             <span id="taxDisplay">$0.00</span>
                         </div> --}}
+                        @if(($draft->credit_amount ?? 0) > 0)
+                        <div class="d-flex justify-content-between mb-2 text-primary">
+                            <span>Modification Credit</span>
+                            <span id="creditDisplay">-${{ number_format($draft->credit_amount, 2) }}</span>
+                        </div>
+                        @endif
                         <div class="d-flex justify-content-between mb-2 total-row">
                             <span>Grand Total</span>
                             <span id="grandTotalDisplay">$0.00</span>
@@ -456,7 +462,9 @@
                 const subtotalAfterDiscount = Math.max(0, subtotal - totalDiscount);
                 // Tax calculation removed as per user request
                 const tax = 0;
-                const grandTotal = subtotalAfterDiscount; // No tax added
+                
+                const credit = parseFloat(@json($draft->credit_amount ?? 0));
+                const grandTotal = Math.max(0, subtotalAfterDiscount - credit);
 
                 $('#subtotalDisplay').text('$' + subtotal.toFixed(2));
                 $('#discountsDisplay').text('-$' + totalDiscount.toFixed(2));
