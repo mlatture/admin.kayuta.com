@@ -577,8 +577,51 @@ class FlowReservationController extends Controller
     }
     public function finalizeModification(Request $request, $draft_id)
     {
-        dd($request->all());
         $draft = ReservationDraft::where('draft_id', $draft_id)->firstOrFail();
+        
+        // --- BUILID SUMMARY FOR INSPECTION ---
+        $originalResIds = json_decode($draft->original_reservation_ids ?? '[]', true);
+        $oldReservations = Reservation::whereIn('id', $originalResIds)->get();
+        
+        $cancelledItems = $oldReservations->map(function($res) {
+            return [
+                'id' => $res->id,
+                'site' => $res->site->name ?? 'Unknown',
+                'dates' => $res->start_date . ' to ' . $res->end_date,
+                'paid_amount' => number_format($res->payments->sum('payment') - $res->refunds->sum('amount'), 2),
+                'status' => 'TO BE CANCELLED'
+            ];
+        });
+
+        $addedItems = collect($draft->cart_data)->map(function($item) {
+            $base = (float)($item['base'] ?? 0);
+            $lock = (float)($item['lock_fee_amount'] ?? 0);
+            return [
+                'site' => $item['name'] ?? 'Unknown',
+                'dates' => ($item['start_date'] ?? 'N/A') . ' to ' . ($item['end_date'] ?? 'N/A'),
+                'charge' => number_format($base + $lock, 2),
+                'status' => 'TO BE ADDED'
+            ];
+        });
+
+        $summary = [
+            'reservation_meta' => [
+                'draft_id' => $draft->draft_id,
+                'original_cart_id' => $draft->original_cart_id,
+                'customer' => User::find($draft->customer_id)->name ?? 'Unknown'
+            ],
+            'cancelled_items' => $cancelledItems,
+            'added_items' => $addedItems,
+            'financial_breakdown' => [
+                'total_credit_from_cancelled' => '$' . number_format($draft->credit_amount, 2),
+                'total_charge_for_new' => '$' . number_format($draft->grand_total, 2),
+                'net_balance' => ($draft->grand_total - $draft->credit_amount >= 0 ? 'DUE: $' : 'REFUND: $') . number_format(abs($draft->grand_total - $draft->credit_amount), 2),
+                'selected_payment_method' => $request->payment_method ?? 'None'
+            ],
+            'request_data' => $request->all()
+        ];
+
+        dd($summary);
 
         if (!$draft->customer_id) {
             return response()->json(['success' => false, 'message' => 'Customer must be bound before finalization.'], 422);
