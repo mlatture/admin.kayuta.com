@@ -145,6 +145,10 @@ class FlowReservationController extends Controller
 
         $primaryCustomer = $draft->customer_id ? User::find($draft->customer_id) : null;
         
+        if ($draft->is_modification) {
+            return view('flow-reservation.step2-modification', compact('draft', 'primaryCustomer'));
+        }
+
         return view('flow-reservation.step2', compact('draft', 'primaryCustomer'));
     }
 
