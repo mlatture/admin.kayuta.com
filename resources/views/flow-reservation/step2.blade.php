@@ -192,9 +192,15 @@
                         <span>Estimated Tax</span>
                         <span id="taxDisplay">${{ number_format($draft->estimated_tax, 2) }}</span>
                     </div> --}}
+                    @if(($draft->credit_amount ?? 0) > 0)
+                    <div class="d-flex justify-content-between mb-2 text-primary">
+                        <span>Modification Credit</span>
+                        <span id="creditDisplay">-${{ number_format($draft->credit_amount, 2) }}</span>
+                    </div>
+                    @endif
                     <div class="d-flex justify-content-between mb-2 fw-bold h5">
                         <span>Grand Total</span>
-                        <span id="grandTotalDisplay">${{ number_format($draft->grand_total, 2) }}</span>
+                        <span id="grandTotalDisplay">${{ number_format(max(0, $draft->grand_total - ($draft->credit_amount ?? 0)), 2) }}</span>
                     </div>
                 </div>
                 <div class="card-footer bg-white border-top-0">
@@ -239,8 +245,12 @@
                     <span>Tax:</span>
                     <span id="offcanvasTax">$0.00</span>
                 </div>
+                <div class="d-flex justify-content-between mb-1 text-primary" id="credit-section" style="{{ ($draft->credit_amount ?? 0) > 0 ? '' : 'display:none;' }}">
+                    <span>Credit Applied:</span>
+                    <span id="offcanvasCredit">-${{ number_format($draft->credit_amount ?? 0, 2) }}</span>
+                </div>
                 <div class="d-flex justify-content-between fw-bold border-top pt-2 mt-2">
-                    <span>Total Due:</span>
+                    <span>Net Total:</span>
                     <span id="displayTotalAmount">$0.00</span>
                 </div>
                 <div class="d-flex justify-content-between fw-bold text-success mt-1">
@@ -438,16 +448,19 @@ $(function() {
     function openPaymentDrawer() {
         const fmt = (amount) => `$${parseFloat(amount).toFixed(2)}`;
 
-        // Map Draft Totals to Drawer
+        const credit = parseFloat(draft.credit_amount || 0);
+        const netTotal = Math.max(0, draft.grand_total - credit);
+
         $('#offcanvasSubtotal').text(fmt(draft.subtotal));
         $('#offcanvasTax').text(fmt(draft.estimated_tax));
-        $('#displayTotalAmount').text(fmt(draft.grand_total));
-        $('#remainingBalance').text(fmt(draft.grand_total));
+        $('#offcanvasCredit').text(`-${fmt(credit)}`);
+        $('#displayTotalAmount').text(fmt(netTotal));
+        $('#remainingBalance').text(fmt(netTotal));
         
-        $('#total-amount').val(parseFloat(draft.grand_total).toFixed(2));
+        $('#total-amount').val(netTotal.toFixed(2));
         $('#subtotal-amount').val(parseFloat(draft.subtotal).toFixed(2));
         $('#tax-amount').text(fmt(draft.estimated_tax));
-        $('#orderAmountInput').val(parseFloat(draft.grand_total).toFixed(2));
+        $('#orderAmountInput').val(netTotal.toFixed(2));
 
         // Reservation Specific Fees
         $('.res-fee-row').show();
@@ -474,8 +487,13 @@ $(function() {
     }
 
     // JS Environment for POS Drawer
-    window.cartOrderStoreUrl = "{{ route('flow-reservation.finalize', $draft->draft_id) }}";
-    window.cartOrderUpdateUrl = "{{ route('flow-reservation.finalize', $draft->draft_id) }}";
+    const isModification = parseFloat(draft.credit_amount || 0) > 0;
+    const finalizeUrl = isModification 
+        ? "{{ route('flow-reservation.finalize-modification', $draft->draft_id) }}"
+        : "{{ route('flow-reservation.finalize', $draft->draft_id) }}";
+
+    window.cartOrderStoreUrl = finalizeUrl;
+    window.cartOrderUpdateUrl = finalizeUrl;
     window.processGiftCard = "{{ route('orders.process.gift.card') }}";
     window.updateGiftCardBalance = "{{ route('orders.process.gift.card.balance') }}";
     window.sentInvoiceEmail = "{{ route('orders.send.invoice') }}";

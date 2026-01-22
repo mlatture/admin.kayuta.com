@@ -19,6 +19,9 @@ class ReservationDraft extends Model
         'grand_total',
         'discount_reason',
         'coupon_code',
+        'credit_amount',
+        'original_cart_id',
+        'customer_id',
     ];
 
     protected $casts = [
