@@ -598,9 +598,9 @@ class FlowReservationController extends Controller
             // we will simulate the "Checkout" but locally manage the Cancellation and Credit.
 
             // 3. Cancel Original Reservation(s)
-            $originalCartId = $draft->original_cart_id;
-            if ($originalCartId) {
-                $oldReservations = Reservation::where('cartid', $originalCartId)->get();
+            $originalResIds = json_decode($draft->original_reservation_ids, true);
+            if (is_array($originalResIds) && !empty($originalResIds)) {
+                $oldReservations = Reservation::whereIn('id', $originalResIds)->get();
                 foreach($oldReservations as $oldRes) {
                     $oldRes->update([
                         'status' => 'Cancelled',
