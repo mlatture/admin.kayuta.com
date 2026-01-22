@@ -482,7 +482,8 @@
                         cart_data: cart,
                         totals: window.currentTotals,
                         discount_reason: $('#discountReason').val(),
-                        coupon_code: window.appliedCouponCode || ''
+                        coupon_code: window.appliedCouponCode || '',
+                        draft_id: "{{ $draft->draft_id ?? '' }}" // Send existing draft ID
                     })
                     .done(function(res) {
                         window.location.href = res.redirect_url;
