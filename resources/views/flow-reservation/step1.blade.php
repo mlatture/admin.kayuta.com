@@ -464,19 +464,19 @@
                 const tax = 0;
                 
                 const credit = parseFloat(@json($draft->credit_amount ?? 0));
-                const grandTotal = Math.max(0, subtotalAfterDiscount - credit);
+                const visualGrandTotal = Math.max(0, subtotalAfterDiscount - credit);
 
                 $('#subtotalDisplay').text('$' + subtotal.toFixed(2));
                 $('#discountsDisplay').text('-$' + totalDiscount.toFixed(2));
                 $('#taxDisplay').text('$' + tax.toFixed(2));
-                $('#grandTotalDisplay').text('$' + grandTotal.toFixed(2));
+                $('#grandTotalDisplay').text('$' + visualGrandTotal.toFixed(2));
 
                 window.currentTotals = {
                     subtotal: subtotal,
                     discount_total: totalDiscount,
-                    estimated_tax: 0, // Tax removed
-                    platform_fee_total: 0, // cart.length * platformFee (Removed)
-                    grand_total: grandTotal
+                    estimated_tax: 0,
+                    platform_fee_total: 0,
+                    grand_total: subtotalAfterDiscount // Save gross total here
                 };
             }
 

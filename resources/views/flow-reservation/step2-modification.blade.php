@@ -155,12 +155,12 @@
                         <h4 class="fw-bold mb-4">Summary</h4>
                         
                         <div class="price-row d-flex justify-content-between">
-                            <span class="text-muted">New Selection Total</span>
+                            <span class="text-muted">Total for New Selections</span>
                             <span class="fw-bold">${{ number_format($draft->grand_total, 2) }}</span>
                         </div>
 
                         <div class="price-row d-flex justify-content-between text-success">
-                            <span class="text-muted">Previous Payments Applied</span>
+                            <span class="text-muted">Credit from Original Reservation</span>
                             <span class="fw-bold">-${{ number_format($draft->credit_amount, 2) }}</span>
                         </div>
 
