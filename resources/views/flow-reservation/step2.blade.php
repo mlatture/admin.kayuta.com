@@ -504,7 +504,7 @@ $(function() {
     window.getProductForReceiptUrl = "{{ route('cart.get-product-for-receipt') }}";
 
     // Checkout Success Redirection
-    window.checkoutSuccessRedirectUrl = "{{ route('admin.reservations.index') }}";
+    window.checkoutSuccessRedirectUrl = "{{ route('reservations.index') }}";
     window.checkoutSuccessMessage = "Checkout successfully!";
     window.skipReceiptAndEmail = true;
 });
