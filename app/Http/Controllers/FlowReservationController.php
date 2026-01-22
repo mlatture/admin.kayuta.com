@@ -560,6 +560,7 @@ class FlowReservationController extends Controller
     }
     public function finalizeModification(Request $request, $draft_id)
     {
+        dd($request->all());
         $draft = ReservationDraft::where('draft_id', $draft_id)->firstOrFail();
 
         if (!$draft->customer_id) {
