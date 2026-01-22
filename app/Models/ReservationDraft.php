@@ -22,6 +22,8 @@ class ReservationDraft extends Model
         'credit_amount',
         'original_cart_id',
         'customer_id',
+        'is_modification',
+        'original_reservation_ids',
     ];
 
     protected $casts = [
