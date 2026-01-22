@@ -487,6 +487,7 @@
 
                 $.post("{{ route('flow-reservation.save-draft') }}", {
                         _token: "{{ csrf_token() }}",
+                        draft_id: "{{ $draft->draft_id ?? '' }}",
                         cart_data: cart,
                         totals: window.currentTotals,
                         discount_reason: $('#discountReason').val(),
