@@ -579,46 +579,83 @@ class FlowReservationController extends Controller
     {
         $draft = ReservationDraft::where('draft_id', $draft_id)->firstOrFail();
         
-        // --- BUILID SUMMARY FOR INSPECTION ---
+        // --- BUILID SOPHISTICATED COMPARISON SUMMARY ---
         $originalResIds = json_decode($draft->original_reservation_ids ?? '[]', true);
-        $oldReservations = Reservation::whereIn('id', $originalResIds)->get();
+        $oldReservations = Reservation::whereIn('id', $originalResIds)->with('site')->get();
         
-        $cancelledItems = $oldReservations->map(function($res) {
-            return [
-                'id' => $res->id,
-                'site' => $res->site->name ?? 'Unknown',
-                'dates' => $res->start_date . ' to ' . $res->end_date,
-                'paid_amount' => number_format($res->payments->sum('payment') - $res->refunds->sum('amount'), 2),
-                'status' => 'TO BE CANCELLED'
-            ];
-        });
-
-        $addedItems = collect($draft->cart_data)->map(function($item) {
-            $base = (float)($item['base'] ?? 0);
-            $lock = (float)($item['lock_fee_amount'] ?? 0);
-            return [
-                'site' => $item['name'] ?? 'Unknown',
-                'dates' => ($item['start_date'] ?? 'N/A') . ' to ' . ($item['end_date'] ?? 'N/A'),
-                'charge' => number_format($base + $lock, 2),
-                'status' => 'TO BE ADDED'
-            ];
-        });
+        $newItems = collect($draft->cart_data);
+        
+        $unchangedItems = collect();
+        $addedItems = collect();
+        $cancelledItems = collect();
+        
+        $matchedOldIds = [];
+        
+        // 1. Identify Unchanged and Added
+        foreach($newItems as $item) {
+            $siteId = $item['id'];
+            $start = $item['start_date'];
+            $end = $item['end_date'];
+            
+            // Find an exact match in original items
+            $match = $oldReservations->filter(function($old) use ($siteId, $start, $end, &$matchedOldIds) {
+                return !in_array($old->id, $matchedOldIds) &&
+                       $old->siteid == $siteId &&
+                       $old->cid->format('Y-m-d') == $start &&
+                       $old->cod->format('Y-m-d') == $end;
+            })->first();
+            
+            if ($match) {
+                $matchedOldIds[] = $match->id;
+                $unchangedItems->push([
+                    'site' => $match->site->name ?? 'Unknown',
+                    'dates' => $start . ' to ' . $end,
+                    'original_paid' => '$' . number_format($match->subtotal, 2),
+                    'new_charge' => '$0.00 (Unchanged)',
+                    'status' => 'KEEPING'
+                ]);
+            } else {
+                $base = (float)($item['base'] ?? 0);
+                $lock = (float)($item['lock_fee_amount'] ?? 0);
+                $addedItems->push([
+                    'site' => $item['name'] ?? 'Unknown',
+                    'dates' => ($item['start_date'] ?? 'N/A') . ' to ' . ($item['end_date'] ?? 'N/A'),
+                    'charge_amount' => '$' . number_format($base + $lock, 2),
+                    'status' => 'NEW CHARGE'
+                ]);
+            }
+        }
+        
+        // 2. Identify Cancelled (Originals not present in New Selection)
+        foreach($oldReservations as $old) {
+            if (!in_array($old->id, $matchedOldIds)) {
+                $cancelledItems->push([
+                    'id' => $old->id,
+                    'site' => $old->site->name ?? 'Unknown',
+                    'dates' => $old->cid->format('Y-m-d') . ' to ' . $old->cod->format('Y-m-d'),
+                    'refund_due' => '$' . number_format($old->subtotal, 2),
+                    'status' => 'TO BE REFUNDED'
+                ]);
+            }
+        }
 
         $summary = [
-            'reservation_meta' => [
-                'draft_id' => $draft->draft_id,
+            'financial_summary' => [
+                'grand_total_new_selection' => '$' . number_format($draft->grand_total, 2),
+                'total_credit_from_original' => '$' . number_format($draft->credit_amount, 2),
+                'net_difference' => ($draft->grand_total - $draft->credit_amount >= 0 ? 'DUE: $' : 'REFUND: $') . number_format(abs($draft->grand_total - $draft->credit_amount), 2),
+                'payment_method_selected' => $request->payment_method ?? 'Not Set'
+            ],
+            'item_breakdown' => [
+                'added_items' => $addedItems,
+                'cancelled_items' => $cancelledItems,
+                'unchanged_items' => $unchangedItems
+            ],
+            'meta' => [
+                'customer' => User::find($draft->customer_id)->name ?? 'Unknown',
                 'original_cart_id' => $draft->original_cart_id,
-                'customer' => User::find($draft->customer_id)->name ?? 'Unknown'
-            ],
-            'cancelled_items' => $cancelledItems,
-            'added_items' => $addedItems,
-            'financial_breakdown' => [
-                'total_credit_from_cancelled' => '$' . number_format($draft->credit_amount, 2),
-                'total_charge_for_new' => '$' . number_format($draft->grand_total, 2),
-                'net_balance' => ($draft->grand_total - $draft->credit_amount >= 0 ? 'DUE: $' : 'REFUND: $') . number_format(abs($draft->grand_total - $draft->credit_amount), 2),
-                'selected_payment_method' => $request->payment_method ?? 'None'
-            ],
-            'request_data' => $request->all()
+                'draft_id' => $draft->draft_id
+            ]
         ];
 
         dd($summary);
