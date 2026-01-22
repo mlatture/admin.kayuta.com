@@ -47,16 +47,27 @@ class FlowReservationController extends Controller
     public function saveDraft(Request $request)
     {
         $request->validate([
+            'draft_id' => 'nullable|string',
             'cart_data' => 'required|array',
             'totals' => 'required|array',
             'discount_reason' => 'nullable|string',
             'coupon_code' => 'nullable|string',
         ]);
 
-        $draftId = (string) Str::uuid();
+        $draftId = $request->input('draft_id');
+        $draft = null;
+
+        if ($draftId) {
+            $draft = ReservationDraft::where('draft_id', $draftId)->first();
+        }
+
+        if (!$draft) {
+            $draftId = (string) Str::uuid();
+            $draft = new ReservationDraft();
+            $draft->draft_id = $draftId;
+        }
         
-        $draft = ReservationDraft::create([
-            'draft_id' => $draftId,
+        $draft->fill([
             'cart_data' => $request->cart_data,
             'subtotal' => $request->totals['subtotal'] ?? 0,
             'discount_total' => $request->totals['discount_total'] ?? 0,
@@ -66,6 +77,8 @@ class FlowReservationController extends Controller
             'discount_reason' => $request->input('discount_reason'),
             'coupon_code'    => $request->input('coupon_code'),
         ]);
+
+        $draft->save();
 
         return response()->json([
             'success' => true,
