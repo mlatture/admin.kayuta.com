@@ -163,6 +163,7 @@ Route::prefix('admin')
             Route::post('/finalize/{draft_id}', [\App\Http\Controllers\FlowReservationController::class, 'finalize'])->name('flow-reservation.finalize');
             Route::get('/site-details', [\App\Http\Controllers\FlowReservationController::class, 'viewSiteDetails'])->name('flow-reservation.site-details');
             Route::get('/information', [\App\Http\Controllers\FlowReservationController::class, 'information'])->name('flow-reservation.information');
+            Route::post('/finalize-modification/{draft_id}', [\App\Http\Controllers\FlowReservationController::class, 'finalizeModification'])->name('flow-reservation.finalize-modification');
             Route::post('/apply-coupon', [\App\Http\Controllers\FlowReservationController::class, 'applyCoupon'])->name('flow-reservation.apply-coupon');
         });
 

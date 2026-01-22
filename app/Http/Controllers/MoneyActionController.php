@@ -246,8 +246,11 @@ class MoneyActionController extends Controller
                 $newSubtotal += ($item['base'] + ($item['lock_fee_amount'] ?? 0));
             }
 
-            // User requested NO automatic credit. Grand Total = Subtotal.
-            $grandTotal = max(0, $newSubtotal);
+            // Calculate Credit from Original Reservation(s)
+            $totalCredit = $reservations->sum('total'); // Using total paid amount as credit
+            
+            // Grand Total logic: New Total - Credit. Min 0.
+            $grandTotal = max(0, $newSubtotal - $totalCredit);
 
             $draft = \App\Models\ReservationDraft::create([
                 'draft_id' => $draftId,
@@ -259,12 +262,16 @@ class MoneyActionController extends Controller
                 'grand_total' => $grandTotal,
                 'discount_reason' => null,
                 'status' => 'pending',
-                'customer_id' => $mainRes->customernumber ?? null
+                'customer_id' => $mainRes->customernumber ?? null,
+                // Modification Fields
+                'is_modification' => true,
+                'credit_amount' => $totalCredit,
+                'original_reservation_ids' => $reservations->pluck('id')->values(),
             ]);
 
             // 5. Redirect to Step 1
             return redirect()->route('flow-reservation.step1', ['draft_id' => $draftId])
-                             ->with('success', "Modification started.");
+                             ->with('success', "Modification started. Credit of $" . number_format($totalCredit, 2) . " applied.");
 
 
 

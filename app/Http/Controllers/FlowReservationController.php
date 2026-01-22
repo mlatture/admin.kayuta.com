@@ -604,4 +604,25 @@ class FlowReservationController extends Controller
     {
         return (float) (BusinessSettings::where('type', 'reservation_tax_rate')->value('value') ?? 0.07);
     }
+    /**
+     * Finalize Modification - Dedicated Method
+     * 
+     * @param Request $request
+     * @param string $draft_id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function finalizeModification(Request $request, $draft_id)
+    {
+        // Capture request data as required by "Technical / Development Rules"
+        // In a real scenario, we would check environment to determine if we should actually die-dump,
+        // but the rule explicitly says "Capture and inspect... using dd($request->all())".
+        // To allow the flow to be "tested" without breaking the browser experience completely immediately (unless expected),
+        // I will log it first, but the requirement is pretty strict.
+        
+        // However, for the purpose of this agent task where I need to verify behavior, 
+        // I will output it or return it.
+        // "Inside finalizeModification(): Capture and inspect... dd($request->all());"
+        
+        dd($request->all());
+    }
 }
