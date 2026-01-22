@@ -102,21 +102,41 @@
                         </div>
 
                         @foreach($draft->cart_data as $item)
-                        <div class="item-card bg-light bg-opacity-25">
-                            <div class="d-flex justify-content-between align-items-start">
-                                <div>
-                                    <h6 class="fw-bold mb-1">{{ $item['name'] }}</h6>
-                                    <p class="text-muted small mb-0">
-                                        <i class="far fa-calendar-alt me-1"></i> {{ $item['start_date'] }} — {{ $item['end_date'] }}
-                                    </p>
+                            @php
+                                $base = (float)($item['base'] ?? 0);
+                                $lockFee = (float)($item['lock_fee_amount'] ?? 0);
+                                $itemTotal = $base + $lockFee;
+                                
+                                $start = \Carbon\Carbon::parse($item['start_date']);
+                                $end = \Carbon\Carbon::parse($item['end_date']);
+                                $nights = $start->diffInDays($end);
+                            @endphp
+                            <div class="item-card bg-light bg-opacity-25 pb-2">
+                                <div class="d-flex justify-content-between align-items-start mb-2">
+                                    <div>
+                                        <h6 class="fw-bold mb-1">{{ $item['name'] }}</h6>
+                                        <p class="text-muted small mb-0">
+                                            <i class="far fa-calendar-alt me-1"></i> {{ $item['start_date'] }} — {{ $item['end_date'] }} 
+                                            <span class="ms-1 fw-bold">({{ $nights }} nights)</span>
+                                        </p>
+                                    </div>
+                                    <div class="text-end">
+                                        <div class="h6 fw-bold mb-0">Item Total: ${{ number_format($itemTotal, 2) }}</div>
+                                    </div>
                                 </div>
-                                <div class="text-end">
-                                    <span class="badge bg-white text-dark border fw-bold px-3 py-2">
-                                        ${{ number_format($item['base'], 2) }}
-                                    </span>
+                                <div class="border-top pt-2 mt-2">
+                                    <div class="d-flex justify-content-between x-small text-muted">
+                                        <span>Base Price</span>
+                                        <span>${{ number_format($base, 2) }}</span>
+                                    </div>
+                                    @if($lockFee > 0)
+                                    <div class="d-flex justify-content-between x-small text-info">
+                                        <span>+ Site Lock Fee</span>
+                                        <span>${{ number_format($lockFee, 2) }}</span>
+                                    </div>
+                                    @endif
                                 </div>
                             </div>
-                        </div>
                         @endforeach
                     </div>
                 </div>
