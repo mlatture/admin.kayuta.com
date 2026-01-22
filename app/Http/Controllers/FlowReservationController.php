@@ -51,59 +51,21 @@ class FlowReservationController extends Controller
             'totals' => 'required|array',
             'discount_reason' => 'nullable|string',
             'coupon_code' => 'nullable|string',
-            'draft_id' => 'nullable|string', // Allow passing existing draft ID
         ]);
 
-        $existingDraft = null;
-        if ($request->draft_id) {
-            $existingDraft = ReservationDraft::where('draft_id', $request->draft_id)->first();
-        }
-
-        $draftId = $existingDraft ? $existingDraft->draft_id : (string) Str::uuid();
+        $draftId = (string) Str::uuid();
         
-        $data = [
+        $draft = ReservationDraft::create([
             'draft_id' => $draftId,
             'cart_data' => $request->cart_data,
             'subtotal' => $request->totals['subtotal'] ?? 0,
             'discount_total' => $request->totals['discount_total'] ?? 0,
             'estimated_tax' => 0, // Tax calculation removed
             'platform_fee_total' => $request->totals['platform_fee_total'] ?? 0,
+            'grand_total' => $request->totals['grand_total'] ?? 0,
             'discount_reason' => $request->input('discount_reason'),
             'coupon_code'    => $request->input('coupon_code'),
-        ];
-
-        // Modification Context Preservation
-        if ($existingDraft) {
-            $data['is_modification'] = $existingDraft->is_modification;
-            $data['credit_amount'] = $existingDraft->credit_amount;
-            $data['original_reservation_ids'] = $existingDraft->original_reservation_ids;
-            $data['customer_id'] = $existingDraft->customer_id; // Preserve customer
-            
-            // Recalculate Grand Total with Credit
-            $grandTotal = ($request->totals['grand_total'] ?? 0);
-            
-            // If the frontend didn't already deduct the credit (it likely didn't in Step 1 JS),
-            // and we are ensuring the backend record is correct.
-            // Actually, Step 1 JS calculates Grand Total = Subtotal - Discount. 
-            // It doesn't know about Credit yet usually (unless we update JS too). 
-            // But even if JS sends a Grand Total, we should apply Credit logic here for the DB record.
-            
-            // Wait, if JS sent grand_total = 175, and credit is 175.
-            // We should store grand_total as 0.
-            
-            // Let's recalculate grand_total based on subtotal - discount - credit
-            $subtotal = $data['subtotal'];
-            $discount = $data['discount_total'];
-            $credit = $data['credit_amount'] ?? 0;
-            
-            $data['grand_total'] = max(0, $subtotal - $discount - $credit);
-            
-            $existingDraft->update($data);
-            $draft = $existingDraft;
-        } else {
-             $data['grand_total'] = $request->totals['grand_total'] ?? 0;
-             $draft = ReservationDraft::create($data);
-        }
+        ]);
 
         return response()->json([
             'success' => true,
@@ -641,26 +603,5 @@ class FlowReservationController extends Controller
     private function getTaxRate()
     {
         return (float) (BusinessSettings::where('type', 'reservation_tax_rate')->value('value') ?? 0.07);
-    }
-    /**
-     * Finalize Modification - Dedicated Method
-     * 
-     * @param Request $request
-     * @param string $draft_id
-     * @return \Illuminate\Http\JsonResponse
-     */
-    public function finalizeModification(Request $request, $draft_id)
-    {
-        // Capture request data as required by "Technical / Development Rules"
-        // In a real scenario, we would check environment to determine if we should actually die-dump,
-        // but the rule explicitly says "Capture and inspect... using dd($request->all())".
-        // To allow the flow to be "tested" without breaking the browser experience completely immediately (unless expected),
-        // I will log it first, but the requirement is pretty strict.
-        
-        // However, for the purpose of this agent task where I need to verify behavior, 
-        // I will output it or return it.
-        // "Inside finalizeModification(): Capture and inspect... dd($request->all());"
-        
-        dd($request->all());
     }
 }

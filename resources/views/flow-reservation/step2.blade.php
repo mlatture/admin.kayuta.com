@@ -188,14 +188,6 @@
                         <span>Discounts</span>
                         <span id="discountsDisplay">-${{ number_format($draft->discount_total, 2) }}</span>
                     </div>
-
-                    @if($draft->is_modification && $draft->credit_amount > 0)
-                    <div class="d-flex justify-content-between mb-2 text-success">
-                        <span>Credit Applied</span>
-                        <span id="creditDisplay">-${{ number_format($draft->credit_amount, 2) }}</span>
-                    </div>
-                    @endif
-                    
                     {{-- <div class="d-flex justify-content-between mb-2">
                         <span>Estimated Tax</span>
                         <span id="taxDisplay">${{ number_format($draft->estimated_tax, 2) }}</span>
@@ -242,10 +234,6 @@
                 <div class="d-flex justify-content-between mb-1 text-danger" id="discount-section" style="display:none;">
                     <span>Discount:</span>
                     <span id="offcanvasDiscount">-$0.00</span>
-                </div>
-                <div class="d-flex justify-content-between mb-1 text-success" id="credit-section" style="display:none;">
-                    <span>Credit Applied:</span>
-                    <span id="offcanvasCredit">-$0.00</span>
                 </div>
                 <div class="d-flex justify-content-between mb-1">
                     <span>Tax:</span>
@@ -474,14 +462,6 @@ $(function() {
             $('#discount-section, #discount-section1').hide();
         }
 
-        // Modification Credit
-        if (draft.is_modification && parseFloat(draft.credit_amount || 0) > 0) {
-            $('#credit-section').show();
-            $('#offcanvasCredit').text(fmt(draft.credit_amount));
-        } else {
-            $('#credit-section').hide();
-        }
-
         // Prefill Email
         $('#email_invoice').val($('[name="primary[email]"]').val() || '');
         $('#cust_email').val($('[name="primary[email]"]').val() || '');
@@ -494,13 +474,8 @@ $(function() {
     }
 
     // JS Environment for POS Drawer
-    let isModification = {{ $draft->is_modification ? 'true' : 'false' }};
-    window.cartOrderStoreUrl = isModification 
-        ? "{{ route('flow-reservation.finalize-modification', $draft->draft_id) }}" 
-        : "{{ route('flow-reservation.finalize', $draft->draft_id) }}";
-    
-    window.cartOrderUpdateUrl = window.cartOrderStoreUrl;
-    
+    window.cartOrderStoreUrl = "{{ route('flow-reservation.finalize', $draft->draft_id) }}";
+    window.cartOrderUpdateUrl = "{{ route('flow-reservation.finalize', $draft->draft_id) }}";
     window.processGiftCard = "{{ route('orders.process.gift.card') }}";
     window.updateGiftCardBalance = "{{ route('orders.process.gift.card.balance') }}";
     window.sentInvoiceEmail = "{{ route('orders.send.invoice') }}";
