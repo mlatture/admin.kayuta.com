@@ -680,8 +680,18 @@ class FlowReservationController extends Controller
 
         dd([
             'draft' => $draft->toArray(),
-            'old_reservations' => $oldReservations->toArray(),
-            'old_reservations_total' => $oldReservations->sum('subtotal')
+            'old_reservations_breakdown' => $oldReservations->map(function($res) {
+                return [
+                    'id' => $res->id,
+                    'siteid' => $res->siteid,
+                    'base' => (float)$res->base,
+                    'subtotal' => (float)$res->subtotal,
+                    'sitelock_fee' => (float)($res->sitelock ?? 0),
+                    'total' => (float)$res->total,
+                    'expected_full_refund' => (float)$res->total // Use this for refund amount
+                ];
+            }),
+            'total_to_credit' => $oldReservations->sum('total'),
         ]);
 
         $summary = $this->getModificationSummary($draft);
