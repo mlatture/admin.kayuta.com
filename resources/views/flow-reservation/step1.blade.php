@@ -11,48 +11,125 @@
             max-height: calc(100vh - 40px);
             display: flex;
             flex-direction: column;
-            overflow: hidden; /* Added */
+            overflow: hidden;
+            border: none;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.08) !important;
+            background: #fff;
+        }
+
+        .cart-panel .card-header {
+            background: #f8f9fa;
+            border-bottom: 1px solid #edf2f7;
+            padding: 1.25rem;
         }
 
         .cart-panel .card-body {
             overflow-y: auto;
             flex: 1;
+            padding: 1.25rem;
+            scrollbar-width: thin;
+            scrollbar-color: #cbd5e0 #f7fafc;
         }
 
-        .cart-panel .card-footer {
-            flex-shrink: 0;
-            background: #fff;
-            border-top: 1px solid #eee;
-            z-index: 5;
+        .cart-panel .card-body::-webkit-scrollbar {
+            width: 6px;
+        }
+        .cart-panel .card-body::-webkit-scrollbar-track {
+            background: #f7fafc;
+        }
+        .cart-panel .card-body::-webkit-scrollbar-thumb {
+            background-color: #cbd5e0;
+            border-radius: 20px;
         }
 
         .cart-item {
-            border-bottom: 1px solid #eee;
-            padding: 10px 0;
+            border-bottom: 1px solid #edf2f7;
+            padding: 1rem 0;
+            transition: all 0.2s ease;
+        }
+
+        .cart-item:hover {
+            background: #fdfdfd;
         }
 
         .cart-item:last-child {
             border-bottom: none;
         }
 
-        .add-on-selector {
+        .cart-item-title {
+            font-weight: 700;
+            color: #2d3748;
+            margin-bottom: 2px;
+        }
+
+        .cart-item-dates {
             font-size: 0.85rem;
+            color: #718096;
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        .cart-item-price-breakdown {
+            font-size: 0.8rem;
+            color: #a0aec0;
+        }
+
+        .cart-item-total {
+            font-weight: 600;
+            color: #2d3748;
+            font-size: 0.95rem;
+        }
+
+        .totals-section {
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-top: 1rem;
         }
 
         .total-row {
-            font-weight: bold;
-            font-size: 1.1rem;
+            font-weight: 800;
+            font-size: 1.25rem;
+            color: #1a202c;
+            border-top: 2px solid #e2e8f0;
+            padding-top: 0.75rem;
+            margin-top: 0.75rem;
+        }
+
+        .btn-next-premium {
+            background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
+            border: none;
+            border-radius: 8px;
+            font-weight: 700;
+            padding: 1rem;
+            box-shadow: 0 4px 12px rgba(56, 161, 105, 0.2);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .btn-next-premium:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 15px rgba(56, 161, 105, 0.3);
+            background: linear-gradient(135deg, #38a169 0%, #2f855a 100%);
+        }
+
+        .btn-next-premium:active {
+            transform: translateY(0);
         }
 
         .platform-fee-info {
-            font-size: 0.75rem;
-            color: #666;
-            font-style: italic;
+            font-size: 0.7rem;
+            color: #a0aec0;
+            text-align: center;
+            margin-top: 0.75rem;
         }
 
-        .occupants-input {
-            width: 60px;
-            display: inline-block;
+        .badge-cart {
+            background: #ebf8ff;
+            color: #3182ce;
+            font-weight: 700;
+            padding: 0.4rem 0.8rem;
+            border-radius: 6px;
         }
     </style>
 @endpush
@@ -137,10 +214,10 @@
             <div class="col-lg-4">
 
 
-                <div class="card shadow-sm cart-panel">
-                    <div class="card-header bg-white d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Your Cart</h5>
-                        <span class="badge bg-primary" id="cartCount">0</span>
+                <div class="card cart-panel">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0 fw-bold"><i class="fas fa-shopping-basket me-2 text-primary"></i>Your Cart</h5>
+                        <span class="badge-cart" id="cartCount">0</span>
                     </div>
                     <div class="card-body">
 
@@ -176,47 +253,47 @@
 
                         <hr>
 
-                        {{-- Totals --}}
-                        <div class="d-flex justify-content-between mb-2">
-                            <span>Subtotal</span>
-                            <span id="subtotalDisplay">$0.00</span>
-                        </div>
-                        <div class="d-flex justify-content-between mb-2 text-danger">
-                            <span>Discounts</span>
-                            <span id="discountsDisplay">-$0.00</span>
-                        </div>
-                        {{-- <div class="d-flex justify-content-between mb-2">
-                            <span>Estimated Tax</span>
-                            <span id="taxDisplay">$0.00</span>
-                        </div> --}}
-                        @if($draft && $draft->is_modification)
-                        <div class="d-flex justify-content-between mb-2 text-success">
-                            <span><i class="fas fa-minus-circle me-1"></i> Immediate Refund</span>
-                            <span id="immediateRefundDisplay">$0.00</span>
-                        </div>
-                        <div class="d-flex justify-content-between mb-2 text-primary">
-                            <span><i class="fas fa-plus-circle me-1"></i> New Charges</span>
-                            <span id="newChargesDisplay">$0.00</span>
-                        </div>
-                        <hr>
-                        @endif
-                        @if(($draft->credit_amount ?? 0) > 0)
-                        <div class="d-flex justify-content-between mb-2 text-primary">
-                            <span>Modification Credit (Total Paid)</span>
-                            <span id="creditDisplay">-${{ number_format($draft->credit_amount, 2) }}</span>
-                        </div>
-                        @endif
-                        <div class="d-flex justify-content-between mb-2 total-row">
-                            <span>Grand Total</span>
-                            <span id="grandTotalDisplay">$0.00</span>
-                        </div>
-                        <div class="platform-fee-info mt-2">
-                            * Pricing includes a platform fee per site.
+                        <div class="totals-section">
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="text-muted">Subtotal</span>
+                                <span id="subtotalDisplay" class="fw-bold">$0.00</span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-2 text-danger">
+                                <span class="text-muted">Discounts</span>
+                                <span id="discountsDisplay" class="fw-bold">-$0.00</span>
+                            </div>
+
+                            @if($draft && $draft->is_modification)
+                            <div class="d-flex justify-content-between mb-2 text-success" style="font-size: 0.9rem;">
+                                <span><i class="fas fa-minus-circle me-1"></i> Immediate Refund</span>
+                                <span id="immediateRefundDisplay" class="fw-bold">$0.00</span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-2 text-primary" style="font-size: 0.9rem;">
+                                <span><i class="fas fa-plus-circle me-1"></i> New Charges</span>
+                                <span id="newChargesDisplay" class="fw-bold">$0.00</span>
+                            </div>
+                            @endif
+
+                            @if(($draft->credit_amount ?? 0) > 0)
+                            <div class="d-flex justify-content-between mb-2 text-info" style="font-size: 0.9rem;">
+                                <span><i class="fas fa-history me-1"></i> Modification Credit</span>
+                                <span id="creditDisplay" class="fw-bold">-${{ number_format($draft->credit_amount, 2) }}</span>
+                            </div>
+                            @endif
+
+                            <div class="d-flex justify-content-between total-row">
+                                <span>Grand Total</span>
+                                <span id="grandTotalDisplay">$0.00</span>
+                            </div>
+                            
+                            <div class="platform-fee-info">
+                                * Pricing includes a platform fee per site.
+                            </div>
                         </div>
                     </div>
-                    <div class="card-footer bg-white border-top-0">
-                        <button class="btn btn-success w-100 py-2" id="nextBtn" disabled>
-                            Next <i class="fas fa-arrow-right ms-1"></i>
+                    <div class="card-footer p-3">
+                        <button class="btn btn-success btn-next-premium w-100 py-3" id="nextBtn" disabled>
+                            CONTINUE TO REVIEW <i class="fas fa-arrow-right ms-2"></i>
                         </button>
                     </div>
                 </div>
@@ -298,33 +375,34 @@
                                                 </label>
                                             </div>
                                         </td>
-                                        <td class="text-end">
-                                            <div class="small mb-2">
-                                                <div class="d-flex justify-content-between">
-                                                    <span class="fw-bold">Sub Total:</span>
-                                                    <span>$${basePrice.toFixed(2)}</span>
+                                        <td class="text-end" style="min-width: 180px;">
+                                            <div class="bg-light p-2 rounded mb-2 shadow-sm border">
+                                                <div class="d-flex justify-content-between small">
+                                                    <span class="text-muted">Sub Total:</span>
+                                                    <span class="fw-bold">$${basePrice.toFixed(2)}</span>
                                                 </div>
-                                                <div class="d-flex justify-content-between">
-                                                    <span class="fw-bold">Avg/Night:</span>
+                                                <div class="d-flex justify-content-between small">
+                                                    <span class="text-muted">Avg/Night:</span>
                                                     <span>$${avgNight.toFixed(2)}</span>
                                                 </div>
-                                                <div class="d-flex justify-content-between">
-                                                    <span class="fw-bold">Extras:</span>
-                                                    <span>$<span class="extras-display-val">${siteLockFee.toFixed(2)}</span></span>
+                                                <div class="d-flex justify-content-between small">
+                                                    <span class="text-muted">Extras:</span>
+                                                    <span class="text-info fw-bold">$<span class="extras-display-val">${siteLockFee.toFixed(2)}</span></span>
                                                 </div>
-                                                <div class="d-flex justify-content-between border-top pt-1 mt-1 fs-6">
-                                                    <span class="fw-bold">Total:</span>
-                                                    <span class="fw-bold">$<span class="total-display-val">${total.toFixed(2)}</span></span>
+                                                <hr class="my-1">
+                                                <div class="d-flex justify-content-between align-items-center">
+                                                    <span class="fw-bold small">Total:</span>
+                                                    <span class="fw-bold text-primary fs-6">$<span class="total-display-val">${total.toFixed(2)}</span></span>
                                                 </div>
                                             </div>
-                                            <button class="btn btn-primary btn-sm w-100 add-to-cart" 
+                                            <button class="btn btn-primary btn-sm w-100 add-to-cart py-2 fw-bold shadow-sm" 
                                                 data-id="${unit.site_id}" 
                                                 data-name="${unit.name}" 
                                                 data-base="${basePrice}"
                                                 data-fee="0"
                                                 data-start="${startDate}"
                                                 data-end="${endDate}">
-                                                Add to Cart
+                                                <i class="fas fa-cart-plus me-1"></i> Add to Cart
                                             </button>
                                         </td>
                                     </tr>
@@ -430,28 +508,39 @@
                         const feeVal = parseFloat(item.fee) || 0;
                         const itemTotal = baseVal + lockFeeVal + feeVal;
                         
-                        // Calculate nights
-                        let nightsText = '';
+                        let nights = 0;
+                        let datesText = '';
                         if (item.start_date && item.end_date) {
-                            const s = new Date(item.start_date);
-                            const e = new Date(item.end_date);
+                            const s = new Date(item.start_date + 'T12:00:00'); // Ensure local noon to avoid TZ shift
+                            const e = new Date(item.end_date + 'T12:00:00');
                             const diff = Math.abs(e - s);
-                            const nights = Math.ceil(diff / (1000 * 60 * 60 * 24)) || 0;
-                            nightsText = `<div class="x-small text-muted">${item.start_date} – ${item.end_date} (${nights} nights)</div>`;
+                            nights = Math.ceil(diff / (1000 * 60 * 60 * 24)) || 0;
+                            datesText = `${item.start_date} – ${item.end_date}`;
                         }
 
                         $container.append(`
                             <div class="cart-item" data-index="${index}">
-                                <div class="d-flex justify-content-between">
-                                    <strong>${item.name}</strong>
-                                    <a href="javascript:void(0)" class="text-danger remove-item" data-index="${index}"><i class="fas fa-trash"></i></a>
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <div class="flex-grow-1">
+                                        <div class="cart-item-title">${item.name}</div>
+                                        <span class="cart-item-dates">
+                                            <i class="far fa-calendar-alt me-1"></i>${datesText} 
+                                            <span class="ms-1 fw-bold text-dark">(${nights} nights)</span>
+                                        </span>
+                                        <div class="cart-item-price-breakdown">
+                                            Base: $${baseVal.toFixed(2)}
+                                            ${lockFeeVal > 0 ? `<br><span class="text-info">+ Site Lock: $${lockFeeVal.toFixed(2)}</span>` : ''}
+                                        </div>
+                                    </div>
+                                    <div class="text-end ms-2">
+                                        <button class="btn btn-link text-danger p-0 mb-2 remove-item" data-index="${index}">
+                                            <i class="fas fa-trash-alt"></i>
+                                        </button>
+                                        <div class="cart-item-total">
+                                            $${itemTotal.toFixed(2)}
+                                        </div>
+                                    </div>
                                 </div>
-                                ${nightsText}
-                                <div class="small text-muted">
-                                    Base: $${baseVal.toFixed(2)}
-                                    ${lockFeeVal > 0 ? `<br><span class="text-info fs-xs">+ Site Lock: $${lockFeeVal.toFixed(2)}</span>` : ''}
-                                </div>
-                                <div class="small fw-bold text-end">Item Total: $${itemTotal.toFixed(2)}</div>
                             </div>
                         `);
                     });
