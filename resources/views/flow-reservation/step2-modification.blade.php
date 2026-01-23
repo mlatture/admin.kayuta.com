@@ -101,43 +101,69 @@
                             <h4 class="mb-0 fw-bold">New Selection</h4>
                         </div>
 
-                        @foreach($draft->cart_data as $item)
-                            @php
-                                $base = (float)($item['base'] ?? 0);
-                                $lockFee = (float)($item['lock_fee_amount'] ?? 0);
-                                $itemTotal = $base + $lockFee;
-                                
-                                $start = \Carbon\Carbon::parse($item['start_date']);
-                                $end = \Carbon\Carbon::parse($item['end_date']);
-                                $nights = $start->diffInDays($end);
-                            @endphp
-                            <div class="item-card bg-light bg-opacity-25 pb-2">
-                                <div class="d-flex justify-content-between align-items-start mb-2">
-                                    <div>
-                                        <h6 class="fw-bold mb-1">{{ $item['name'] }}</h6>
-                                        <p class="text-muted small mb-0">
-                                            <i class="far fa-calendar-alt me-1"></i> {{ $item['start_date'] }} — {{ $item['end_date'] }} 
-                                            <span class="ms-1 fw-bold">({{ $nights }} nights)</span>
-                                        </p>
-                                    </div>
-                                    <div class="text-end">
-                                        <div class="h6 fw-bold mb-0">Item Total: ${{ number_format($itemTotal, 2) }}</div>
+                        @if(isset($summary['item_breakdown']['added_items']) && $summary['item_breakdown']['added_items']->count() > 0)
+                        <div class="mb-4">
+                            <h6 class="text-primary fw-bold mb-3"><i class="fas fa-plus-circle me-1"></i> Added Items (New Charges)</h6>
+                            @foreach($summary['item_breakdown']['added_items'] as $item)
+                                <div class="item-card bg-light bg-opacity-25 pb-2">
+                                    <div class="d-flex justify-content-between align-items-start mb-2">
+                                        <div>
+                                            <h6 class="fw-bold mb-1">{{ $item['site'] }}</h6>
+                                            <p class="text-muted small mb-0">
+                                                <i class="far fa-calendar-alt me-1"></i> {{ $item['dates'] }}
+                                            </p>
+                                        </div>
+                                        <div class="text-end">
+                                            <div class="h6 fw-bold mb-0 text-primary">+ ${{ number_format($item['charge_amount'], 2) }}</div>
+                                        </div>
                                     </div>
                                 </div>
-                                <div class="border-top pt-2 mt-2">
-                                    <div class="d-flex justify-content-between x-small text-muted">
-                                        <span>Base Price</span>
-                                        <span>${{ number_format($base, 2) }}</span>
+                            @endforeach
+                        </div>
+                        @endif
+
+                        @if(isset($summary['item_breakdown']['cancelled_items']) && $summary['item_breakdown']['cancelled_items']->count() > 0)
+                        <div class="mb-4">
+                            <h6 class="text-danger fw-bold mb-3"><i class="fas fa-minus-circle me-1"></i> Cancelled Items (Refunds)</h6>
+                            @foreach($summary['item_breakdown']['cancelled_items'] as $item)
+                                <div class="item-card bg-danger bg-opacity-10 pb-2" style="border-color: #ffcccc;">
+                                    <div class="d-flex justify-content-between align-items-start mb-2">
+                                        <div>
+                                            <h6 class="fw-bold mb-1">{{ $item['site'] }}</h6>
+                                            <p class="text-muted small mb-0">
+                                                <i class="far fa-calendar-alt me-1"></i> {{ $item['dates'] }}
+                                            </p>
+                                        </div>
+                                        <div class="text-end">
+                                            <div class="h6 fw-bold mb-0 text-danger">- ${{ number_format($item['refund_due'], 2) }}</div>
+                                        </div>
                                     </div>
-                                    @if($lockFee > 0)
-                                    <div class="d-flex justify-content-between x-small text-info">
-                                        <span>+ Site Lock Fee</span>
-                                        <span>${{ number_format($lockFee, 2) }}</span>
-                                    </div>
-                                    @endif
                                 </div>
-                            </div>
-                        @endforeach
+                            @endforeach
+                        </div>
+                        @endif
+
+                        @if(isset($summary['item_breakdown']['unchanged_items']) && $summary['item_breakdown']['unchanged_items']->count() > 0)
+                        <div class="mb-4">
+                            <h6 class="text-muted fw-bold mb-3"><i class="fas fa-check-circle me-1"></i> Unchanged Items</h6>
+                            @foreach($summary['item_breakdown']['unchanged_items'] as $item)
+                                <div class="item-card bg-secondary bg-opacity-10 pb-2">
+                                    <div class="d-flex justify-content-between align-items-start mb-2">
+                                        <div>
+                                            <h6 class="fw-bold mb-1">{{ $item['site'] }}</h6>
+                                            <p class="text-muted small mb-0">
+                                                <i class="far fa-calendar-alt me-1"></i> {{ $item['dates'] }}
+                                            </p>
+                                        </div>
+                                        <div class="text-end">
+                                            <div class="small text-muted mb-0">Original: ${{ number_format($item['original_paid'], 2) }}</div>
+                                            <div class="h6 fw-bold mb-0 text-muted">$0.00 (Unchanged)</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            @endforeach
+                        </div>
+                        @endif
                     </div>
                 </div>
 
@@ -174,13 +200,23 @@
                     <div class="card-body p-4">
                         <h4 class="fw-bold mb-4">Summary</h4>
                         
-                        <div class="price-row d-flex justify-content-between">
-                            <span class="text-muted">Total for New Selections</span>
+                        <div class="price-row d-flex justify-content-between text-danger">
+                            <span class="text-muted">Total Refunds (Cancelled)</span>
+                            <span class="fw-bold">-${{ number_format($summary['financial_summary']['total_refunds'], 2) }}</span>
+                        </div>
+
+                        <div class="price-row d-flex justify-content-between text-primary">
+                            <span class="text-muted">Total New Charges</span>
+                            <span class="fw-bold">+${{ number_format($summary['financial_summary']['total_new_charges'], 2) }}</span>
+                        </div>
+                        
+                        <div class="price-row d-flex justify-content-between border-top">
+                            <span class="text-muted">Grand Total Cart</span>
                             <span class="fw-bold">${{ number_format($draft->grand_total, 2) }}</span>
                         </div>
 
                         <div class="price-row d-flex justify-content-between text-success">
-                            <span class="text-muted">Credit from Original Reservation</span>
+                            <span class="text-muted">Original Credit Applied</span>
                             <span class="fw-bold">-${{ number_format($draft->credit_amount, 2) }}</span>
                         </div>
 

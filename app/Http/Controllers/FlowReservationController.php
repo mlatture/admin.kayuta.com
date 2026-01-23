@@ -40,9 +40,13 @@ class FlowReservationController extends Controller
             }
         }
         
-        // Tax calculation removed as per user request
+        $originalReservations = collect();
+        if ($draft && $draft->is_modification) {
+            $originalResIds = json_decode($draft->original_reservation_ids ?? '[]', true);
+            $originalReservations = Reservation::whereIn('id', $originalResIds)->with('site')->get();
+        }
         
-        return view('flow-reservation.step1', compact('siteClasses', 'siteHookups', 'draft'));
+        return view('flow-reservation.step1', compact('siteClasses', 'siteHookups', 'draft', 'originalReservations'));
     }
 
     public function saveDraft(Request $request)
@@ -160,7 +164,8 @@ class FlowReservationController extends Controller
         $primaryCustomer = $draft->customer_id ? User::find($draft->customer_id) : null;
         
         if ($draft->is_modification) {
-            return view('flow-reservation.step2-modification', compact('draft', 'primaryCustomer'));
+            $summary = $this->getModificationSummary($draft);
+            return view('flow-reservation.step2-modification', compact('draft', 'primaryCustomer', 'summary'));
         }
 
         return view('flow-reservation.step2', compact('draft', 'primaryCustomer'));
@@ -576,15 +581,10 @@ class FlowReservationController extends Controller
             ], 500);
         }
     }
-    public function finalizeModification(Request $request, $draft_id)
+    private function getModificationSummary($draft)
     {
-        dd($request->all());
-        $draft = ReservationDraft::where('draft_id', $draft_id)->firstOrFail();
-        
-        // --- BUILID SOPHISTICATED COMPARISON SUMMARY ---
         $originalResIds = json_decode($draft->original_reservation_ids ?? '[]', true);
         $oldReservations = Reservation::whereIn('id', $originalResIds)->with('site')->get();
-        
         $newItems = collect($draft->cart_data);
         
         $unchangedItems = collect();
@@ -594,6 +594,7 @@ class FlowReservationController extends Controller
         $matchedOldIds = [];
         $totalPriceAdded = 0;
         $totalPriceCancelled = 0;
+        $totalPriceUnchanged = 0;
         
         // 1. Identify Unchanged and Added
         foreach($newItems as $item) {
@@ -611,11 +612,12 @@ class FlowReservationController extends Controller
             
             if ($match) {
                 $matchedOldIds[] = $match->id;
+                $totalPriceUnchanged += (float)$match->subtotal;
                 $unchangedItems->push([
                     'site' => $match->site->sitename ?? $match->site->name ?? $match->siteid,
                     'dates' => $start . ' to ' . $end,
-                    'original_paid' => '$' . number_format($match->subtotal, 2),
-                    'new_charge' => '$0.00 (Unchanged)',
+                    'original_paid' => (float)$match->subtotal,
+                    'new_charge' => 0,
                     'status' => 'KEEPING'
                 ]);
             } else {
@@ -627,7 +629,7 @@ class FlowReservationController extends Controller
                 $addedItems->push([
                     'site' => $item['name'] ?? 'Unknown Site',
                     'dates' => ($item['start_date'] ?? 'N/A') . ' to ' . ($item['end_date'] ?? 'N/A'),
-                    'charge_amount' => '$' . number_format($itemPrice, 2),
+                    'charge_amount' => $itemPrice,
                     'status' => 'NEW CHARGE'
                 ]);
             }
@@ -641,20 +643,20 @@ class FlowReservationController extends Controller
                     'id' => $old->id,
                     'site' => $old->site->sitename ?? $old->site->name ?? $old->siteid,
                     'dates' => $old->cid->format('Y-m-d') . ' to ' . $old->cod->format('Y-m-d'),
-                    'refund_due' => '$' . number_format($old->subtotal, 2),
+                    'refund_due' => (float)$old->subtotal,
                     'status' => 'TO BE REFUNDED'
                 ]);
             }
         }
 
-        $summary = [
+        return [
             'financial_summary' => [
-                'total_refunds' => '$' . number_format($totalPriceCancelled, 2),
-                'total_new_charges' => '$' . number_format($totalPriceAdded, 2),
-                'net_difference' => ($totalPriceAdded - $totalPriceCancelled >= 0 ? 'DUE: $' : 'REFUND: $') . number_format(abs($totalPriceAdded - $totalPriceCancelled), 2),
-                'grand_total_cart' => '$' . number_format($draft->grand_total, 2),
-                'total_credit_available' => '$' . number_format($draft->credit_amount, 2),
-                'payment_method_selected' => $request->payment_method ?? 'Not Set'
+                'total_refunds' => $totalPriceCancelled,
+                'total_new_charges' => $totalPriceAdded,
+                'total_unchanged' => $totalPriceUnchanged,
+                'net_difference' => $totalPriceAdded - $totalPriceCancelled,
+                'grand_total_cart' => $draft->grand_total,
+                'total_credit_available' => $draft->credit_amount,
             ],
             'item_breakdown' => [
                 'added_items' => $addedItems,
@@ -667,9 +669,26 @@ class FlowReservationController extends Controller
                 'draft_id' => $draft->draft_id
             ]
         ];
+    }
 
+    public function finalizeModification(Request $request, $draft_id)
+    {
+        $draft = ReservationDraft::where('draft_id', $draft_id)->firstOrFail();
+        
+        $originalResIds = json_decode($draft->original_reservation_ids ?? '[]', true);
+        $oldReservations = Reservation::whereIn('id', $originalResIds)->with('site')->get();
 
-        // Proceed with finalization logic using the refined summary data
+        dd([
+            'draft' => $draft->toArray(),
+            'old_reservations' => $oldReservations->toArray(),
+            'old_reservations_total' => $oldReservations->sum('subtotal')
+        ]);
+
+        $summary = $this->getModificationSummary($draft);
+        $totalPriceAdded = $summary['financial_summary']['total_new_charges'];
+        $totalPriceCancelled = $summary['financial_summary']['total_refunds'];
+
+        // Proceed with finalization logic using the summary calculated above
         if (!$draft->customer_id) {
             return response()->json(['success' => false, 'message' => 'Customer must be bound before finalization.'], 422);
         }

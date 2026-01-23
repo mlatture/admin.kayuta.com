@@ -181,9 +181,20 @@
                             <span>Estimated Tax</span>
                             <span id="taxDisplay">$0.00</span>
                         </div> --}}
+                        @if($draft && $draft->is_modification)
+                        <div class="d-flex justify-content-between mb-2 text-success">
+                            <span><i class="fas fa-minus-circle me-1"></i> Immediate Refund</span>
+                            <span id="immediateRefundDisplay">$0.00</span>
+                        </div>
+                        <div class="d-flex justify-content-between mb-2 text-primary">
+                            <span><i class="fas fa-plus-circle me-1"></i> New Charges</span>
+                            <span id="newChargesDisplay">$0.00</span>
+                        </div>
+                        <hr>
+                        @endif
                         @if(($draft->credit_amount ?? 0) > 0)
                         <div class="d-flex justify-content-between mb-2 text-primary">
-                            <span>Modification Credit</span>
+                            <span>Modification Credit (Total Paid)</span>
                             <span id="creditDisplay">-${{ number_format($draft->credit_amount, 2) }}</span>
                         </div>
                         @endif
@@ -213,6 +224,7 @@
     <script>
         $(function() {
             let cart = @json($draft ? $draft->cart_data : []);
+            const originalReservations = @json($originalReservations ?? []);
             // Platform fee removed to match manage/reservation logic
             // let platformFee = 0; 
             // Tax calculation removed as per user request
@@ -465,6 +477,44 @@
                 
                 const credit = parseFloat(@json($draft->credit_amount ?? 0));
                 const visualGrandTotal = Math.max(0, subtotalAfterDiscount - credit);
+
+                // Modification Specifics
+                if (originalReservations.length > 0) {
+                    let matchedOriginalIds = [];
+                    let totalRefunds = 0;
+                    let totalNewCharges = 0;
+                    
+                    cart.forEach(item => {
+                        const siteId = item.id;
+                        const start = item.start_date || item.cid;
+                        const end = item.end_date || item.cod;
+                        
+                        // Simple string comparison for dates (Y-m-d)
+                        const match = originalReservations.find(old => {
+                            const oldStart = old.cid.split('T')[0];
+                            const oldEnd = old.cod.split('T')[0];
+                            return !matchedOriginalIds.includes(old.id) &&
+                                   String(old.siteid) === String(siteId) &&
+                                   oldStart === start &&
+                                   oldEnd === end;
+                        });
+                        
+                        if (match) {
+                            matchedOriginalIds.push(match.id);
+                        } else {
+                            totalNewCharges += (parseFloat(item.base) || 0) + (parseFloat(item.lock_fee_amount) || 0) + (parseFloat(item.fee) || 0);
+                        }
+                    });
+                    
+                    originalReservations.forEach(old => {
+                        if (!matchedOriginalIds.includes(old.id)) {
+                            totalRefunds += parseFloat(old.subtotal) || 0;
+                        }
+                    });
+                    
+                    $('#immediateRefundDisplay').text('$' + totalRefunds.toFixed(2));
+                    $('#newChargesDisplay').text('$' + totalNewCharges.toFixed(2));
+                }
 
                 $('#subtotalDisplay').text('$' + subtotal.toFixed(2));
                 $('#discountsDisplay').text('-$' + totalDiscount.toFixed(2));
