@@ -11,11 +11,19 @@
             max-height: calc(100vh - 40px);
             display: flex;
             flex-direction: column;
+            overflow: hidden; /* Added */
         }
 
         .cart-panel .card-body {
             overflow-y: auto;
             flex: 1;
+        }
+
+        .cart-panel .card-footer {
+            flex-shrink: 0;
+            background: #fff;
+            border-top: 1px solid #eee;
+            z-index: 5;
         }
 
         .cart-item {
@@ -508,7 +516,7 @@
                     
                     originalReservations.forEach(old => {
                         if (!matchedOriginalIds.includes(old.id)) {
-                            totalRefunds += parseFloat(old.subtotal) || 0;
+                            totalRefunds += parseFloat(old.total) || parseFloat(old.subtotal) || 0;
                         }
                     });
                     

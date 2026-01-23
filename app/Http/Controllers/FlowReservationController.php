@@ -612,11 +612,11 @@ class FlowReservationController extends Controller
             
             if ($match) {
                 $matchedOldIds[] = $match->id;
-                $totalPriceUnchanged += (float)$match->subtotal;
+                $totalPriceUnchanged += (float)$match->total;
                 $unchangedItems->push([
                     'site' => $match->site->sitename ?? $match->site->name ?? $match->siteid,
                     'dates' => $start . ' to ' . $end,
-                    'original_paid' => (float)$match->subtotal,
+                    'original_paid' => (float)$match->total,
                     'new_charge' => 0,
                     'status' => 'KEEPING'
                 ]);
@@ -638,12 +638,12 @@ class FlowReservationController extends Controller
         // 2. Identify Cancelled (Originals not present in New Selection)
         foreach($oldReservations as $old) {
             if (!in_array($old->id, $matchedOldIds)) {
-                $totalPriceCancelled += (float)$old->subtotal;
+                $totalPriceCancelled += (float)$old->total;
                 $cancelledItems->push([
                     'id' => $old->id,
                     'site' => $old->site->sitename ?? $old->site->name ?? $old->siteid,
                     'dates' => $old->cid->format('Y-m-d') . ' to ' . $old->cod->format('Y-m-d'),
-                    'refund_due' => (float)$old->subtotal,
+                    'refund_due' => (float)$old->total,
                     'status' => 'TO BE REFUNDED'
                 ]);
             }
