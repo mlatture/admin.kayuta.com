@@ -289,12 +289,11 @@
                             <div class="platform-fee-info">
                                 * Pricing includes a platform fee per site.
                             </div>
+                            
+                            <button class="btn btn-success btn-next-premium w-100 py-3 mt-3" id="nextBtn" disabled>
+                                Next <i class="fas fa-arrow-right ms-2"></i>
+                            </button>
                         </div>
-                    </div>
-                    <div class="card-footer p-3">
-                        <button class="btn btn-success btn-next-premium w-100 py-3" id="nextBtn" disabled>
-                            CONTINUE TO REVIEW <i class="fas fa-arrow-right ms-2"></i>
-                        </button>
                     </div>
                 </div>
             </div>
