@@ -15,6 +15,7 @@ use App\Models\User; // Added
 use App\Models\CartReservation; // Added
 use App\Models\Reservation; // Added
 use App\Models\Payment; // Added
+use App\Models\Refund; // Added
 use App\Models\GiftCard; // Added
 use App\Services\ReservationLogService; // Added
 use Illuminate\Support\Facades\Http;
@@ -590,6 +591,8 @@ class FlowReservationController extends Controller
         $cancelledItems = collect();
         
         $matchedOldIds = [];
+        $totalPriceAdded = 0;
+        $totalPriceCancelled = 0;
         
         // 1. Identify Unchanged and Added
         foreach($newItems as $item) {
@@ -598,9 +601,9 @@ class FlowReservationController extends Controller
             $end = $item['end_date'];
             
             // Find an exact match in original items
-            $match = $oldReservations->filter(function($old) use ($siteId, $start, $end, &$matchedOldIds) {
+            $match = $oldReservations->filter(function($old) use ($siteId, $start, $end, $matchedOldIds) {
                 return !in_array($old->id, $matchedOldIds) &&
-                       $old->siteid == $siteId &&
+                       (string)$old->siteid == (string)$siteId &&
                        $old->cid->format('Y-m-d') == $start &&
                        $old->cod->format('Y-m-d') == $end;
             })->first();
@@ -608,7 +611,7 @@ class FlowReservationController extends Controller
             if ($match) {
                 $matchedOldIds[] = $match->id;
                 $unchangedItems->push([
-                    'site' => $match->site->name ?? 'Unknown',
+                    'site' => $match->site->sitename ?? $match->site->name ?? $match->siteid,
                     'dates' => $start . ' to ' . $end,
                     'original_paid' => '$' . number_format($match->subtotal, 2),
                     'new_charge' => '$0.00 (Unchanged)',
@@ -617,10 +620,13 @@ class FlowReservationController extends Controller
             } else {
                 $base = (float)($item['base'] ?? 0);
                 $lock = (float)($item['lock_fee_amount'] ?? 0);
+                $itemPrice = $base + $lock;
+                $totalPriceAdded += $itemPrice;
+                
                 $addedItems->push([
-                    'site' => $item['name'] ?? 'Unknown',
+                    'site' => $item['name'] ?? 'Unknown Site',
                     'dates' => ($item['start_date'] ?? 'N/A') . ' to ' . ($item['end_date'] ?? 'N/A'),
-                    'charge_amount' => '$' . number_format($base + $lock, 2),
+                    'charge_amount' => '$' . number_format($itemPrice, 2),
                     'status' => 'NEW CHARGE'
                 ]);
             }
@@ -629,9 +635,10 @@ class FlowReservationController extends Controller
         // 2. Identify Cancelled (Originals not present in New Selection)
         foreach($oldReservations as $old) {
             if (!in_array($old->id, $matchedOldIds)) {
+                $totalPriceCancelled += (float)$old->subtotal;
                 $cancelledItems->push([
                     'id' => $old->id,
-                    'site' => $old->site->name ?? 'Unknown',
+                    'site' => $old->site->sitename ?? $old->site->name ?? $old->siteid,
                     'dates' => $old->cid->format('Y-m-d') . ' to ' . $old->cod->format('Y-m-d'),
                     'refund_due' => '$' . number_format($old->subtotal, 2),
                     'status' => 'TO BE REFUNDED'
@@ -641,9 +648,11 @@ class FlowReservationController extends Controller
 
         $summary = [
             'financial_summary' => [
-                'grand_total_new_selection' => '$' . number_format($draft->grand_total, 2),
-                'total_credit_from_original' => '$' . number_format($draft->credit_amount, 2),
-                'net_difference' => ($draft->grand_total - $draft->credit_amount >= 0 ? 'DUE: $' : 'REFUND: $') . number_format(abs($draft->grand_total - $draft->credit_amount), 2),
+                'total_refunds' => '$' . number_format($totalPriceCancelled, 2),
+                'total_new_charges' => '$' . number_format($totalPriceAdded, 2),
+                'net_difference' => ($totalPriceAdded - $totalPriceCancelled >= 0 ? 'DUE: $' : 'REFUND: $') . number_format(abs($totalPriceAdded - $totalPriceCancelled), 2),
+                'grand_total_cart' => '$' . number_format($draft->grand_total, 2),
+                'total_credit_available' => '$' . number_format($draft->credit_amount, 2),
                 'payment_method_selected' => $request->payment_method ?? 'Not Set'
             ],
             'item_breakdown' => [
@@ -652,14 +661,14 @@ class FlowReservationController extends Controller
                 'unchanged_items' => $unchangedItems
             ],
             'meta' => [
-                'customer' => User::find($draft->customer_id)->name ?? 'Unknown',
+                'customer' => ($user = User::find($draft->customer_id)) ? $user->full_name : 'Unknown',
                 'original_cart_id' => $draft->original_cart_id,
                 'draft_id' => $draft->draft_id
             ]
         ];
 
-        dd($summary);
 
+        // Proceed with finalization logic using the refined summary data
         if (!$draft->customer_id) {
             return response()->json(['success' => false, 'message' => 'Customer must be bound before finalization.'], 422);
         }
@@ -707,44 +716,45 @@ class FlowReservationController extends Controller
                 }
             }
 
-            // 4. Record the "Payment" (Using Credit + New Money)
-            // Record the credit use as a payment
-            if ($creditAmount > 0) {
-                Payment::create([
-                    'cartid' => $draft->draft_id,
-                    'method' => 'Account Credit',
-                    'customernumber' => $customer->id,
-                    'email' => $customer->email,
-                    'payment' => min($creditAmount, $draft->grand_total),
-                    'transaction_type' => 'Modification Credit',
-                    'receipt' => 'MOD-' . Str::random(8)
-                ]);
-            }
-
-            // Record the new money if any
-            if ($netTotal > 0) {
+            // 4. Record the "Payments" and "Refunds" based on site changes
+            
+            // Record the New Charges (e.g. Added sites or price increases)
+            if ($totalPriceAdded > 0) {
                 Payment::create([
                     'cartid' => $draft->draft_id,
                     'method' => $paymentMethod,
                     'customernumber' => $customer->id,
                     'email' => $customer->email,
-                    'payment' => $netTotal,
+                    'payment' => $totalPriceAdded,
                     'transaction_type' => 'Sale',
                     'x_ref_num' => $xRefNum,
                     'receipt' => 'PAY-' . Str::random(8)
                 ]);
             }
 
-            // 5. If it's a refund (Credit > New Total), handle refund
-            if ($creditAmount > $draft->grand_total) {
-                $refundAmount = $creditAmount - $draft->grand_total;
-                \App\Models\Refund::create([
+            // Record Refund for explicitly cancelled items
+            if ($totalPriceCancelled > 0) {
+                Refund::create([
                     'cartid' => $draft->draft_id,
-                    'amount' => $refundAmount,
-                    'reason' => 'Reservation Modification - Overpayment',
+                    'amount' => $totalPriceCancelled,
+                    'reason' => 'Reservation Modification - Cancelled Items',
                     'method' => 'Account Credit',
-                    'override_reason' => 'System modification automatic refund',
+                    'override_reason' => 'Automatic refund for cancelled site during modification',
                     'created_by' => auth()->id()
+                ]);
+            }
+
+            // Record the carry-over credit for unchanged items (Internal shift)
+            $unchangedCredit = $creditAmount - $totalPriceCancelled;
+            if ($unchangedCredit > 0) {
+                Payment::create([
+                    'cartid' => $draft->draft_id,
+                    'method' => 'Account Credit',
+                    'customernumber' => $customer->id,
+                    'email' => $customer->email,
+                    'payment' => $unchangedCredit,
+                    'transaction_type' => 'Modification Credit',
+                    'receipt' => 'MOD-' . Str::random(8)
                 ]);
             }
 
