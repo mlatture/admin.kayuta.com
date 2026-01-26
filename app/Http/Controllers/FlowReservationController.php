@@ -678,134 +678,267 @@ class FlowReservationController extends Controller
         $originalResIds = json_decode($draft->original_reservation_ids ?? '[]', true);
         $oldReservations = Reservation::whereIn('id', $originalResIds)->with('site')->get();
 
-        dd([
-            'draft' => $draft->toArray(),
-            'old_reservations_breakdown' => $oldReservations->map(function($res) {
-                return [
-                    'id' => $res->id,
-                    'siteid' => $res->siteid,
-                    'base' => (float)$res->base,
-                    'subtotal' => (float)$res->subtotal,
-                    'sitelock_fee' => (float)($res->sitelock ?? 0),
-                    'total' => (float)$res->total,
-                    'expected_full_refund' => (float)$res->total // Use this for refund amount
-                ];
-            }),
-            'total_to_credit' => $oldReservations->sum('total'),
-        ]);
+        $oldReservationsArray = $oldReservations->map(function($res) {
+            return [
+                'id' => $res->id,
+                'siteid' => $res->siteid,
+                'base' => (float)$res->base,
+                'subtotal' => (float)$res->subtotal,
+                'sitelock_fee' => (float)($res->sitelock ?? 0),
+                'total' => (float)$res->total,
+                'expected_full_refund' => (float)$res->total
+            ];
+        })->toArray();
 
-        $summary = $this->getModificationSummary($draft);
-        $totalPriceAdded = $summary['financial_summary']['total_new_charges'];
-        $totalPriceCancelled = $summary['financial_summary']['total_refunds'];
+        $totalToCredit = $oldReservations->sum('total');
 
-        // Proceed with finalization logic using the summary calculated above
         if (!$draft->customer_id) {
             return response()->json(['success' => false, 'message' => 'Customer must be bound before finalization.'], 422);
         }
 
         $customer = User::findOrFail($draft->customer_id);
-        $creditAmount = (float) ($draft->credit_amount ?? 0);
-        $netTotal = (float) max(0, $draft->grand_total - $creditAmount);
 
-        DB::beginTransaction();
         try {
-            // 1. Process "Payment" using credit if possible
-            // If Net Total > 0, we need real payment. Otherwise, it's just credit shifting.
-            
-            $paymentMethod = $request->payment_method ?? 'Account Credit';
-            $xRefNum = $request->x_ref_num ?? null;
+            // Step 1: Map payment method from POS drawer format to API format
+            $paymentMethod = $request->payment_method ?? 'Cash';
+            $apiPaymentMethod = 'cash'; // default
+            $paymentData = [];
 
-            if ($netTotal > 0 && !$xRefNum && !in_array($paymentMethod, ['Cash', 'Check', 'Account Credit'])) {
-                 // If there's a net due and no external ref/manual method, we might need to call Cardknox here
-                 // But typically the frontend handles terminal/swipe and passes x_ref_num
+            switch ($paymentMethod) {
+                case 'CreditCard':
+                case 'Visa':
+                case 'MasterCard':
+                case 'Amex':
+                case 'Discover':
+                case 'Manual':
+                    if ($request->x_ref_num) {
+                        $apiPaymentMethod = 'cash';
+                        $paymentData = [
+                            'cash_tendered' => $request->amount ?? $draft->grand_total,
+                            'external_ref' => $request->x_ref_num
+                        ];
+                    } else {
+                        $apiPaymentMethod = 'card';
+                        $paymentData = [
+                            'xCardNum' => $request->xCardNum ?? '',
+                            'xExp' => $request->xExp ?? '',
+                            'cvv' => $request->cvv ?? '',
+                        ];
+                    }
+                    break;
+                case 'Check':
+                    $apiPaymentMethod = 'ach';
+                    $paymentData = [
+                        'ach' => [
+                            'routing' => $request->xRouting ?? '',
+                            'account' => $request->xAccount ?? '',
+                            'name' => $request->xName ?? ($customer->f_name . ' ' . $customer->l_name),
+                        ]
+                    ];
+                    break;
+                case 'GiftCard':
+                case 'Gift Card':
+                    $apiPaymentMethod = 'gift_card';
+                    $paymentData = [
+                        'gift_card_code' => $request->xBarcode ?? $request->gift_card_code ?? '',
+                    ];
+                    break;
+                case 'Cash':
+                default:
+                    $apiPaymentMethod = 'cash';
+                    $paymentData = [
+                        'cash_tendered' => $request->amount ?? $draft->grand_total,
+                    ];
+                    break;
             }
 
-            // 2. Logic for pushing to Booking API (Reuse finalize logic but adjust totals)
-            // Note: Since we want to re-use Step 1/2 logic, we actually need to CALL the external checkout
-            // with the FULL amount or 0? 
-            // In rvparkhq systems, usually we push the full reservation and mark it as paid.
-            
-            // For simplicity in this implementation, we will perform the finalize() logic but inject modification steps.
-            // We use the same finalize() structure but ensure the original reservation is handled.
-            
-            // [REDACTED: Mapping to API omitted for brevity, logic follows finalize() pattern]
-            // Actually, let's proceed with local saving if API is handled elsewhere OR replicate finalize logic here.
-            
-            // To be safe and reuse the user's request of finalizeModification(), 
-            // we will simulate the "Checkout" but locally manage the Cancellation and Credit.
+            // Step 2: Prepare checkout modification data
+            $modificationData = array_merge([
+                'draft_id' => $draft->draft_id,
+                'customer_id' => $customer->id,
+                'payment_method' => $apiPaymentMethod,
+                'xAmount' => $request->amount ?? $draft->grand_total,
+                'fname' => $customer->f_name,
+                'lname' => $customer->l_name,
+                'email' => $customer->email,
+                'phone' => $customer->phone ?? '',
+                'street_address' => $customer->street_address ?? '',
+                'city' => $customer->city ?? '',
+                'state' => $customer->state ?? '',
+                'zip' => $customer->zip ?? '',
+                
+                'draft' => $draft->toArray(),
+                'old_reservations_breakdown' => $oldReservationsArray,
+                'total_to_credit' => $totalToCredit,
+            ], $paymentData);
 
-            // 3. Cancel Original Reservation(s)
-            $originalResIds = json_decode($draft->original_reservation_ids, true);
-            if (is_array($originalResIds) && !empty($originalResIds)) {
-                $oldReservations = Reservation::whereIn('id', $originalResIds)->get();
-                foreach($oldReservations as $oldRes) {
-                    $oldRes->update([
-                        'status' => 'Cancelled',
-                        'reason' => 'Modified by Admin. New Cart ID: ' . $draft->draft_id
-                    ]);
+            // Step 3: Call external Checkout Modification API
+            $response = Http::withHeaders([
+                'Accept' => 'application/json',
+                'Authorization' => 'Bearer ' . env('BOOKING_BEARER_KEY'),
+            ])->post(env('BOOK_API_URL') . 'v1/checkout/modification', $modificationData);
+
+            if ($response->failed()) {
+                Log::error('Checkout Modification API failed', [
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                    'draft_id' => $draft_id,
+                ]);
+
+                $errorMessage = $response->json()['message'] ?? 'Modification processing failed.';
+                if (str_contains(strtolower($errorMessage), 'email')) {
+                    $errorMessage = 'Modification processing failed.';
+                }
+
+                return response()->json([
+                    'success' => false,
+                    'message' => $errorMessage,
+                    'errors' => $response->json()['errors'] ?? [],
+                ], $response->status());
+            }
+
+            // Handle gift card deduction if applicable
+            if ($apiPaymentMethod === 'gift_card') {
+                $giftCardCode = $paymentData['gift_card_code'] ?? null;
+                if ($giftCardCode) {
+                    GiftCard::where('barcode', $giftCardCode)->decrement('amount', $request->amount ?? $draft->grand_total);
                 }
             }
 
-            // 4. Record the "Payments" and "Refunds" based on site changes
+            // Mark draft as confirmed/completed
+            $draft->status = 'confirmed';
+            $draft->save();
+
+            return response()->json([
+                'success' => true,
+                'order_id' => $draft->draft_id,
+                'message' => 'Reservation modified successfully.'
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error("Finalize Modification Error: " . $e->getMessage(), [
+                'draft_id' => $draft_id,
+                'trace' => $e->getTraceAsString(),
+            ]);
             
-            // Record the New Charges (e.g. Added sites or price increases)
-            if ($totalPriceAdded > 0) {
-                Payment::create([
-                    'cartid' => $draft->draft_id,
-                    'method' => $paymentMethod,
-                    'customernumber' => $customer->id,
-                    'email' => $customer->email,
-                    'payment' => $totalPriceAdded,
-                    'transaction_type' => 'Sale',
-                    'x_ref_num' => $xRefNum,
-                    'receipt' => 'PAY-' . Str::random(8)
-                ]);
-            }
+            return response()->json([
+                'success' => false,
+                'message' => 'Error connecting to booking service: ' . $e->getMessage()
+            ], 500);
+        }
 
-            // Record Refund for explicitly cancelled items
-            if ($totalPriceCancelled > 0) {
-                Refund::create([
-                    'cartid' => $draft->draft_id,
-                    'amount' => $totalPriceCancelled,
-                    'reason' => 'Reservation Modification - Cancelled Items',
-                    'method' => 'Account Credit',
-                    'override_reason' => 'Automatic refund for cancelled site during modification',
-                    'created_by' => auth()->id()
-                ]);
-            }
+        // $summary = $this->getModificationSummary($draft);
+        // $totalPriceAdded = $summary['financial_summary']['total_new_charges'];
+        // $totalPriceCancelled = $summary['financial_summary']['total_refunds'];
 
-            // Record the carry-over credit for unchanged items (Internal shift)
-            $unchangedCredit = $creditAmount - $totalPriceCancelled;
-            if ($unchangedCredit > 0) {
-                Payment::create([
-                    'cartid' => $draft->draft_id,
-                    'method' => 'Account Credit',
-                    'customernumber' => $customer->id,
-                    'email' => $customer->email,
-                    'payment' => $unchangedCredit,
-                    'transaction_type' => 'Modification Credit',
-                    'receipt' => 'MOD-' . Str::random(8)
-                ]);
-            }
+        // // Proceed with finalization logic using the summary calculated above
+        // if (!$draft->customer_id) {
+        //     return response()->json(['success' => false, 'message' => 'Customer must be bound before finalization.'], 422);
+        // }
 
-            // 6. Push to external API (Simulated or actual call like finalize)
-            // Reusing the structure from finalize() but sending 0 if fully paid by credit
-            // For this specific task, the user wanted finalizeModification() to be the entry.
+        // $customer = User::findOrFail($draft->customer_id);
+        // $creditAmount = (float) ($draft->credit_amount ?? 0);
+        // $netTotal = (float) max(0, $draft->grand_total - $creditAmount);
+
+        // DB::beginTransaction();
+        // try {
+        //     // 1. Process "Payment" using credit if possible
+        //     // If Net Total > 0, we need real payment. Otherwise, it's just credit shifting.
             
-            // [LOGIC: Push to cart and checkout in API]
-            // I'll call a private method to handle the shared API logic if both finalize and finalizeModification use it.
-            // For now, I'll return success to indicate local state is correct.
+        //     $paymentMethod = $request->payment_method ?? 'Account Credit';
+        //     $xRefNum = $request->x_ref_num ?? null;
 
-            DB::commit();
+        //     if ($netTotal > 0 && !$xRefNum && !in_array($paymentMethod, ['Cash', 'Check', 'Account Credit'])) {
+        //          // If there's a net due and no external ref/manual method, we might need to call Cardknox here
+        //          // But typically the frontend handles terminal/swipe and passes x_ref_num
+        //     }
 
-            // 7. Send Emails
-            try {
-                Mail::to($customer->email)->send(new \App\Mail\ReservationModified($draft));
-            } catch (\Exception $e) {
-                Log::error("Failed to send modification email: " . $e->getMessage());
-            }
+        //     // 2. Logic for pushing to Booking API (Reuse finalize logic but adjust totals)
+        //     // Note: Since we want to re-use Step 1/2 logic, we actually need to CALL the external checkout
+        //     // with the FULL amount or 0? 
+        //     // In rvparkhq systems, usually we push the full reservation and mark it as paid.
+            
+        //     // For simplicity in this implementation, we will perform the finalize() logic but inject modification steps.
+        //     // We use the same finalize() structure but ensure the original reservation is handled.
+            
+        //     // [REDACTED: Mapping to API omitted for brevity, logic follows finalize() pattern]
+        //     // Actually, let's proceed with local saving if API is handled elsewhere OR replicate finalize logic here.
+            
+        //     // To be safe and reuse the user's request of finalizeModification(), 
+        //     // we will simulate the "Checkout" but locally manage the Cancellation and Credit.
 
-            $draft->update(['status' => 'confirmed']);
+        //     // 3. Cancel Original Reservation(s)
+        //     $originalResIds = json_decode($draft->original_reservation_ids, true);
+        //     if (is_array($originalResIds) && !empty($originalResIds)) {
+        //         $oldReservations = Reservation::whereIn('id', $originalResIds)->get();
+        //         foreach($oldReservations as $oldRes) {
+        //             $oldRes->update([
+        //                 'status' => 'Cancelled',
+        //                 'reason' => 'Modified by Admin. New Cart ID: ' . $draft->draft_id
+        //             ]);
+        //         }
+        //     }
+
+        //     // 4. Record the "Payments" and "Refunds" based on site changes
+            
+        //     // Record the New Charges (e.g. Added sites or price increases)
+        //     if ($totalPriceAdded > 0) {
+        //         Payment::create([
+        //             'cartid' => $draft->draft_id,
+        //             'method' => $paymentMethod,
+        //             'customernumber' => $customer->id,
+        //             'email' => $customer->email,
+        //             'payment' => $totalPriceAdded,
+        //             'transaction_type' => 'Sale',
+        //             'x_ref_num' => $xRefNum,
+        //             'receipt' => 'PAY-' . Str::random(8)
+        //         ]);
+        //     }
+
+        //     // Record Refund for explicitly cancelled items
+        //     if ($totalPriceCancelled > 0) {
+        //         Refund::create([
+        //             'cartid' => $draft->draft_id,
+        //             'amount' => $totalPriceCancelled,
+        //             'reason' => 'Reservation Modification - Cancelled Items',
+        //             'method' => 'Account Credit',
+        //             'override_reason' => 'Automatic refund for cancelled site during modification',
+        //             'created_by' => auth()->id()
+        //         ]);
+        //     }
+
+        //     // Record the carry-over credit for unchanged items (Internal shift)
+        //     $unchangedCredit = $creditAmount - $totalPriceCancelled;
+        //     if ($unchangedCredit > 0) {
+        //         Payment::create([
+        //             'cartid' => $draft->draft_id,
+        //             'method' => 'Account Credit',
+        //             'customernumber' => $customer->id,
+        //             'email' => $customer->email,
+        //             'payment' => $unchangedCredit,
+        //             'transaction_type' => 'Modification Credit',
+        //             'receipt' => 'MOD-' . Str::random(8)
+        //         ]);
+        //     }
+
+        //     // 6. Push to external API (Simulated or actual call like finalize)
+        //     // Reusing the structure from finalize() but sending 0 if fully paid by credit
+        //     // For this specific task, the user wanted finalizeModification() to be the entry.
+            
+        //     // [LOGIC: Push to cart and checkout in API]
+        //     // I'll call a private method to handle the shared API logic if both finalize and finalizeModification use it.
+        //     // For now, I'll return success to indicate local state is correct.
+
+        //     DB::commit();
+
+        //     // 7. Send Emails
+        //     try {
+        //         Mail::to($customer->email)->send(new \App\Mail\ReservationModified($draft));
+        //     } catch (\Exception $e) {
+        //         Log::error("Failed to send modification email: " . $e->getMessage());
+        //     }
+
+        //     $draft->update(['status' => 'confirmed']);
 
             return response()->json([
                 'success' => true,
@@ -813,11 +946,11 @@ class FlowReservationController extends Controller
                 'order_id' => $draft->draft_id
             ]);
 
-        } catch (\Exception $e) {
-            DB::rollBack();
-            Log::error("Modification Finalize Failed: " . $e->getMessage());
-            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
-        }
+        // } catch (\Exception $e) {
+        //     DB::rollBack();
+        //     Log::error("Modification Finalize Failed: " . $e->getMessage());
+        //     return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        // }
     }
 
     public function viewSiteDetails(Request $request)
