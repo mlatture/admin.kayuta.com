@@ -809,12 +809,9 @@ class FlowReservationController extends Controller
             $draft->status = 'confirmed';
             $draft->save();
 
-            return response()->json([
-                'success' => true,
-                'order_id' => $draft->draft_id,
-                'message' => 'Reservation modified successfully.'
-            ]);
-
+            // Redirect to the reservation detail page for the group
+            return redirect()->route('admin.reservations.show', ['id' => $draft->draft_id])
+                ->with('success', 'Reservation modified successfully.');
         } catch (\Exception $e) {
             Log::error("Finalize Modification Error: " . $e->getMessage(), [
                 'draft_id' => $draft_id,

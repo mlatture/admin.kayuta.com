@@ -22,7 +22,12 @@
     <!-- Header Block -->
     <div class="d-flex justify-content-between align-items-center mb-4 d-print-none">
         <div>
-            <h1 class="h3 mb-0 text-gray-800">Reservation #{{ $mainReservation->xconfnum ?? $mainReservation->cartid }}</h1>
+            <h1 class="h3 mb-0 text-gray-800">
+                Reservation #{{ $mainReservation->xconfnum ?? $mainReservation->cartid }}
+                @if($mainReservation->status === 'Cancelled')
+                    <span class="badge bg-danger ms-2">CANCELLED</span>
+                @endif
+            </h1>
             <p class="mb-0 text-muted">
                 Created on {{ $mainReservation->created_at->format('M d, Y h:i A') }} 
                 by {{ $mainReservation->createdby == 'Guest' ? 'Guest' : $mainReservation->createdby }}
@@ -300,38 +305,7 @@
 
 
 
-    <!-- Refunds -->
-    @if(!$refunds->isEmpty())
-    <div class="card shadow mb-4 border-left-danger">
-        <div class="card-header py-3">
-            <h6 class="m-0 font-weight-bold text-danger">Payment Refunds & Cancellations</h6>
-        </div>
-        <div class="card-body">
-            <table class="table table-sm">
-                <thead>
-                    <tr>
-                        <th>Date</th>
-                        <th>Method</th>
-                        <th>Refund</th>
-                        <th>Fee</th>
-                        <th>Reason</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach($refunds as $refund)
-                    <tr>
-                        <td>{{ $refund->created_at->format('M d, Y') }}</td>
-                        <td>{{ $refund->method }}</td>
-                        <td class="text-danger">-${{ number_format($refund->amount, 2) }}</td>
-                        <td class="text-secondary">${{ number_format($refund->cancellation_fee, 2) }}</td>
-                        <td>{{ $refund->reason }}</td>
-                    </tr>
-                    @endforeach
-                </tbody>
-            </table>
-        </div>
-    </div>
-    @endif
+
 
     <!-- System Logs -->
   <div class="card shadow mb-4">
@@ -705,7 +679,39 @@
                 </div>
             </div>
         </form>
+        <!-- Refunds (Moved to bottom) -->
+    @if(!$refunds->isEmpty())
+    <div class="card shadow mb-4 border-left-danger">
+        <div class="card-header py-3">
+            <h6 class="m-0 font-weight-bold text-danger">Payment Refunds & Cancellations</h6>
+        </div>
+        <div class="card-body">
+            <table class="table table-sm">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Method</th>
+                        <th>Refund</th>
+                        <th>Fee</th>
+                        <th>Reason</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach($refunds as $refund)
+                    <tr>
+                        <td>{{ $refund->created_at->format('M d, Y') }}</td>
+                        <td>{{ $refund->method }}</td>
+                        <td class="text-danger">-${{ number_format($refund->amount, 2) }}</td>
+                        <td class="text-secondary">${{ number_format($refund->cancellation_fee, 2) }}</td>
+                        <td>{{ $refund->reason }}</td>
+                    </tr>
+                    @endforeach
+                </tbody>
+            </table>
+        </div>
     </div>
+    @endif
+</div>
 </div>
 
 @push('js')

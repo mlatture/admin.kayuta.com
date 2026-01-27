@@ -18,6 +18,7 @@
                             <p><strong>Rig Type:</strong> <span id="resRigType"></span></p>
                             <p><strong>Rig Length:</strong> <span id="resRigLength"></span></p>
                             <p><strong>Class:</strong> <span id="resSiteClass"></span></p>
+                            <p><strong>Status:</strong> <span id="resStatusBadge" class="badge"></span></p>
                         </div>
                         <div class="col-md-6">
                             <p><strong>Email:</strong> <span id="resEmail"></span></p>

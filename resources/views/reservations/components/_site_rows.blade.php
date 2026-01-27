@@ -98,6 +98,9 @@
                 data-reservation-id="{{ $reservation->id }}" data-start-date="{{ $reservation->cid }}"
                 data-end-date="{{ $reservation->cod }}" data-cart-id="{{ $reservation->cartid }}">
                 {{ strtoupper($reservation->lname ?? 'Guest') }}
+                @if($isCancelled)
+                    (CANCELLED)
+                @endif
             </td>
             @php $i += $reservationColSpan; @endphp
         @elseif ($isOccupiedButNotStart)
