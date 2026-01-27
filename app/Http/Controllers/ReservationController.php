@@ -313,6 +313,7 @@ class ReservationController extends Controller
             'checkedin' => optional($reservation->checkedin)->format('F j, Y g:i A') ?? null,
             'checkedout' => optional($reservation->checkedout)->format('F j, Y g:i A') ?? null,
             'source' => $reservation->source ?? 'Walk-In',
+            'status' => $reservation->status ?? 'Pending',
             'customerRecord' => [
                 'email' => $reservation->user->email ?? ($reservation->email ?? 'N/A'),
                 'phone' => $reservation->user->phone ?? ($reservation->phone ?? 'N/A'),

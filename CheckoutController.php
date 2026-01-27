@@ -790,7 +790,7 @@ public function checkout(Request $request)
             /* -------------------------------------------------------------
              | 1. Load draft
              * -------------------------------------------------------------*/
-            $draft = \App\Model\ReservationDraft::where('draft_id', $v['draft_id'])
+            $draft = \App\Models\ReservationDraft::where('draft_id', $v['draft_id'])
                 ->lockForUpdate()
                 ->first();
 
@@ -825,12 +825,12 @@ public function checkout(Request $request)
                 ? json_decode($draft->original_reservation_ids, true)
                 : (array)$draft->original_reservation_ids;
 
-            $customer = \App\User::findOrFail($draft->customer_id);
+            $customer = \App\Models\User::findOrFail($draft->customer_id);
 
             /* -------------------------------------------------------------
              | 2. Load original reservations
              * -------------------------------------------------------------*/
-            $originalReservations = \App\Model\Reservation::whereIn('id', $originalIds)->get();
+            $originalReservations = \App\Models\Reservation::whereIn('id', $originalIds)->get();
             if ($originalReservations->isEmpty()) {
                 DB::rollBack();
                 return response()->json(['ok' => false, 'message' => 'Original reservations missing'], 400);
@@ -869,7 +869,7 @@ public function checkout(Request $request)
              * -------------------------------------------------------------*/
             $originalPaymentId = $originalReservations->pluck('payment_id')->filter()->first();
             $originalPayment   = $originalPaymentId
-                ? \App\Model\Payment::find($originalPaymentId)
+                ? \App\Models\Payment::find($originalPaymentId)
                 : null;
 
             $paymentId = null;
@@ -904,13 +904,14 @@ public function checkout(Request $request)
                         return response()->json(['ok' => false, 'message' => $resp['xError']], 400);
                     }
 
-                    $payment = \App\Model\Payment::create([
-                        'customernumber' => $customer->id,
+                    $payment = \App\Models\Payment::create([
+                        'cartid'         => $draft->draft_id,
+                        'receipt'        => rand(1000, 9999),
                         'method'         => $resp['xCardType'] ?? 'Card',
-                        'payment'        => $net,
+                        'customernumber' => $customer->id,
                         'email'          => $customer->email,
+                        'payment'        => $net,
                         'x_ref_num'      => $resp['xRefNum'] ?? null,
-                        'meta'           => json_encode(['draft_id' => $draft->draft_id]),
                     ]);
 
                     $paymentId = $payment->id;
@@ -951,14 +952,14 @@ public function checkout(Request $request)
                     return response()->json(['ok' => false, 'message' => $resp['xError']], 400);
                 }
 
-                $refund = \App\Model\Refund::create([
-                    'customernumber' => $customer->id,
-                    'amount'         => $refundAmount,
-                    'method'         => 'Card',
-                    'status'         => 'approved',
-                    'gateway_ref'    => $resp['xRefNum'],
-                    'original_payment_id' => $originalPaymentId,
-                    'draft_id'       => $draft->draft_id,
+                $refund = \App\Models\Refund::create([
+                    'cartid'          => $draft->draft_id,
+                    'reservations_id' => $originalReservations->first()->id ?? 0,
+                    'amount'          => $refundAmount,
+                    'method'          => 'Card',
+                    'reason'          => 'Reservation Modification',
+                    'x_ref_num'       => $resp['xRefNum'],
+                    'created_by'      => auth()->user()->name ?? 'System',
                 ]);
 
                 $refundId = $refund->id;
@@ -969,9 +970,7 @@ public function checkout(Request $request)
              * -------------------------------------------------------------*/
             foreach ($removed as $r) {
                 $r->update([
-                    'status' => 'cancelled',
-                    'cancelled_at' => now(),
-                    'cancel_reason' => 'Modification',
+                    'status' => 'Cancelled',
                 ]);
             }
 
@@ -979,23 +978,34 @@ public function checkout(Request $request)
                 $r = $oldMap[$key];
                 $r->cid = Carbon::parse($item['start_date'])->setTime(15,0);
                 $r->cod = Carbon::parse($item['end_date'])->setTime(11,0);
-                if ($paymentId && $hasColumn('reservations', 'payment_id')) {
-                    $r->payment_id = $paymentId;
-                }
                 $r->save();
             }
 
             $newReservationIds = [];
             foreach ($added as $item) {
-                $res = \App\Model\Reservation::create([
+                $res = \App\Models\Reservation::create([
+                    'cartid' => $draft->draft_id,
+                    'source' => 'Modification',
+                    'email' => $customer->email,
+                    'fname' => $customer->f_name ?? '',
+                    'lname' => $customer->l_name ?? '',
                     'customernumber' => $customer->id,
                     'siteid' => $item['id'],
                     'cid' => Carbon::parse($item['start_date'])->setTime(15,0),
                     'cod' => Carbon::parse($item['end_date'])->setTime(11,0),
-                    'totalcharges' => $item['base'] + ($item['lock_fee_amount'] ?? 0),
-                    'source' => 'Modification',
-                    'createdby' => 'API',
-                    'payment_id' => $paymentId,
+                    'total' => $item['base'] + ($item['lock_fee_amount'] ?? 0),
+                    'subtotal' => $item['base'],
+                    'totaltax' => 0, // Assuming tax already handled or not needed for mod
+                    'siteclass' => $item['siteclass'] ?? '',
+                    'nights' => Carbon::parse($item['end_date'])->diffInDays(Carbon::parse($item['start_date'])),
+                    'base' => $item['base'],
+                    'sitelock' => (float) ($item['lock_fee_amount'] ?? 0),
+                    'rigtype' => $item['hookup'] ?? '',
+                    'riglength' => $item['rig_length'] ?? 0,
+                    'xconfnum' => 'MOD-' . rand(1000, 9999),
+                    'createdby' => auth()->user()->name ?? 'system',
+                    'receipt' => rand(1000, 9999),
+                    'rid' => 'uc',
                 ]);
                 $newReservationIds[] = $res->id;
             }
@@ -1004,9 +1014,7 @@ public function checkout(Request $request)
              | 9. Finalize draft
              * -------------------------------------------------------------*/
             $draft->update([
-                'status' => 'completed',
-                'payment_id' => $paymentId,
-                'refund_id'  => $refundId,
+                'status' => 'confirmed',
             ]);
 
             DB::commit();
