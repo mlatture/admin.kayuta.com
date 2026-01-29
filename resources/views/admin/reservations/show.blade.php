@@ -130,9 +130,17 @@
                                 </a></li>
                                 <li><hr class="dropdown-divider"></li>
                                 <li><h6 class="dropdown-header">Modification</h6></li>
-                                <li><a class="dropdown-item" href="{{ route('admin.reservations.modify', $mainReservation->cartid) }}">
-                                    <i class="fas fa-edit me-2 text-primary"></i> Modify Reservation
-                                </a></li>
+                                <li>
+                                    @if($mainReservation->status === 'Cancelled')
+                                        <button class="dropdown-item disabled" type="button" title="Cannot modify cancelled reservation" style="cursor: not-allowed; opacity: 0.6;">
+                                            <i class="fas fa-edit me-2 text-muted"></i> Modify Reservation
+                                        </button>
+                                    @else
+                                        <a class="dropdown-item" href="{{ route('admin.reservations.modify', $mainReservation->cartid) }}">
+                                            <i class="fas fa-edit me-2 text-primary"></i> Modify Reservation
+                                        </a>
+                                    @endif
+                                </li>
                                 <li><a class="dropdown-item disabled" href="#" data-bs-toggle="modal" data-bs-target="#moveSiteModal" title="Use Modify Flow">
                                     <i class="fas fa-exchange-alt me-2 text-muted"></i> Move Sites (Legacy)
                                 </a></li>
@@ -402,6 +410,39 @@
         @endif
     </div>
 </div>
+
+    <!-- Refunds & Cancellations -->
+    @if(!$refunds->isEmpty())
+    <div class="card shadow mb-4 border-left-danger">
+        <div class="card-header py-3">
+            <h6 class="m-0 font-weight-bold text-danger">Payment Refunds & Cancellations</h6>
+        </div>
+        <div class="card-body">
+            <table class="table table-sm">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Method</th>
+                        <th>Refund</th>
+                        <th>Fee</th>
+                        <th>Reason</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach($refunds as $refund)
+                    <tr>
+                        <td>{{ $refund->created_at->format('M d, Y') }}</td>
+                        <td>{{ $refund->method }}</td>
+                        <td class="text-danger">-${{ number_format($refund->amount, 2) }}</td>
+                        <td class="text-secondary">${{ number_format($refund->cancellation_fee, 2) }}</td>
+                        <td>{{ $refund->reason }}</td>
+                    </tr>
+                    @endforeach
+                </tbody>
+            </table>
+        </div>
+    </div>
+    @endif
 
 
 </div>
@@ -680,37 +721,7 @@
             </div>
         </form>
         <!-- Refunds (Moved to bottom) -->
-    @if(!$refunds->isEmpty())
-    <div class="card shadow mb-4 border-left-danger">
-        <div class="card-header py-3">
-            <h6 class="m-0 font-weight-bold text-danger">Payment Refunds & Cancellations</h6>
-        </div>
-        <div class="card-body">
-            <table class="table table-sm">
-                <thead>
-                    <tr>
-                        <th>Date</th>
-                        <th>Method</th>
-                        <th>Refund</th>
-                        <th>Fee</th>
-                        <th>Reason</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach($refunds as $refund)
-                    <tr>
-                        <td>{{ $refund->created_at->format('M d, Y') }}</td>
-                        <td>{{ $refund->method }}</td>
-                        <td class="text-danger">-${{ number_format($refund->amount, 2) }}</td>
-                        <td class="text-secondary">${{ number_format($refund->cancellation_fee, 2) }}</td>
-                        <td>{{ $refund->reason }}</td>
-                    </tr>
-                    @endforeach
-                </tbody>
-            </table>
-        </div>
-    </div>
-    @endif
+
 </div>
 </div>
 
