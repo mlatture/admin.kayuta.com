@@ -327,6 +327,8 @@
                         const siteLockFee = parseFloat(res.site_lock_fee) || 0;
                         const units = res.data.response.results.units;
                         tbody.empty();
+                        
+                        console.log(res);
 
                         if (units.length === 0) {
                             tbody.append(
@@ -340,8 +342,8 @@
                             const nights = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) || 1;
 
                             units.forEach(unit => {
-                                const basePrice = parseFloat(unit.price_quote.total);
-                                const avgNight = parseFloat(unit.price_quote.avg_nightly || 0);
+                                const basePrice = parseFloat(unit.price_quote.base_total);
+                                const avgNight = parseFloat(unit.price_quote.unit_price || 0);
                                 const total = basePrice + siteLockFee; // Initial view assumes site lock checked
                                 
                                 tbody.append(`
@@ -716,7 +718,7 @@
                             const automatedItem = {
                                 id: unit.site_id,
                                 name: unit.name,
-                                base: parseFloat(unit.price_quote.total),
+                                base: parseFloat(unit.price_quote.sub_total),
                                 fee: 0, // platformFee (Removed)
                                 cid: cid, // We store the specific dates for this site
                                 cod: cod,
