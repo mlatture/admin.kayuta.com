@@ -78,7 +78,10 @@ public function show(Request $request, $id)
 
     $payments = collect(); // kept for view compatibility
     $additionalPayments = \App\Models\AdditionalPayment::whereIn('cartid', $cartIds)->get();
-    $refunds            = \App\Models\Refund::whereIn('cartid', $cartIds)->get();
+    $refunds = \App\Models\Refund::where(function($query) use ($cartIds, $reservations) {
+        $query->whereIn('cartid', $cartIds)
+              ->orWhereIn('reservations_id', $reservations->pluck('id'));
+    })->get();
 
     // Checkout payment (single record)
     $checkoutPayment = null;
