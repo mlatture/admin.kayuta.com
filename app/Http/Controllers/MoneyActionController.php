@@ -216,9 +216,18 @@ class MoneyActionController extends Controller
                      $siteName = $res->site->name ?? $res->site->sitename ?? $res->siteid;
                  }
 
+                 $itemNights = (int) ($res->nights ?? 1);
                  $itemSubtotal = (float) $res->subtotal;
                  $itemTotal = (float) $res->total;
-                 $itemBase = (float) ($res->base ?? $res->subtotal);
+                 $itemBase = (float) ($res->base ?? 0);
+
+                // If base is 0, we fallback to subtotal - lock fee
+                if ($itemBase <= 0) {
+                    $itemBase = $itemSubtotal - $siteLockFeeAmount;
+                } else {
+                    // Important: Multiply nightly base by nights for the cart UI
+                    $itemBase = $itemBase * $itemNights;
+                }
 
                  $cartData[] = [
                     'id' => (string) $res->siteid,
@@ -234,7 +243,7 @@ class MoneyActionController extends Controller
                     ],
                     'site_lock_fee' => $siteLockStatus
                  ];
-                 $subtotal += $itemTotal;
+                 $subtotal += ($itemBase + $siteLockFeeAmount);
             }
 
             // 4. We create a NEW draft for the replacement reservation
