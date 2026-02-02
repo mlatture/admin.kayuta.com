@@ -262,6 +262,7 @@ class MoneyActionController extends Controller
                 'customer_id' => $mainRes->customernumber ?? null,
                 'credit_amount' => $totalPaid,
                 'is_modification' => true,
+                'original_cart_id' => $mainRes->cartid,
                 'original_reservation_ids' => json_encode($reservations->pluck('id')->toArray())
             ]);
 
