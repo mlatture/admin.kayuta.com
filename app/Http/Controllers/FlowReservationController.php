@@ -274,6 +274,76 @@ class FlowReservationController extends Controller
         ]);
     }
 
+    public function addToCart(Request $request)
+    {
+        $validated = $request->validate([
+            'id' => 'required',
+            'cid' => 'required|date',
+            'cod' => 'required|date',
+            'occupants' => 'nullable|array',
+            'site_lock_fee' => 'nullable|string', // 'on' or 'off'
+        ]);
+
+        try {
+            // 1. Create or Update Cart (Always call as per instruction)
+            $cartResponse = Http::withHeaders([
+                'Accept' => 'application/json',
+                'Authorization' => 'Bearer ' . env('BOOKING_BEARER_KEY'),
+            ])->post(env('BOOK_API_URL') . 'v1/cart', [
+                'utm_source' => 'rvparkhq',
+                'utm_medium' => 'referral',
+                'utm_campaign' => 'flow_reservation',
+            ]);
+
+            if ($cartResponse->failed()) {
+                Log::error('Failed to init external cart', ['body' => $cartResponse->body()]);
+                return response()->json(['success' => false, 'message' => 'Failed to initialize cart.'], 500);
+            }
+
+            $cartData = $cartResponse->json();
+            $externalCartId = $cartData['data']['cart_id'] ?? null;
+            $externalCartToken = $cartData['data']['cart_token'] ?? null;
+
+            if (!$externalCartId || !$externalCartToken) {
+                return response()->json(['success' => false, 'message' => 'Invalid cart response.'], 500);
+            }
+
+            // 2. Add Item to that Cart
+            $itemResponse = Http::withHeaders([
+                'Accept' => 'application/json',
+                'Authorization' => 'Bearer ' . env('BOOKING_BEARER_KEY'),
+            ])->post(env('BOOK_API_URL') . 'v1/cart/items', [
+                'cart_id' => $externalCartId,
+                'token' => $externalCartToken,
+                'site_id' => $validated['id'],
+                'start_date' => $validated['cid'],
+                'end_date' => $validated['cod'],
+                'occupants' => [
+                    'adults'   => $validated['occupants']['adults'] ?? 2,
+                    'children' => $validated['occupants']['children'] ?? 0,
+                ],
+                'site_lock_fee' => ($validated['site_lock_fee'] === 'on') 
+                    ? (float) (BusinessSettings::where('type', 'site_lock_fee')->value('value') ?? 0) 
+                    : 0,
+            ]);
+
+            if ($itemResponse->failed()) {
+                Log::error('Failed to add item to external cart', ['body' => $itemResponse->body()]);
+                return response()->json(['success' => false, 'message' => 'Failed to add item to cart.'], 500);
+            }
+
+            return response()->json([
+                'success' => true,
+                'external_cart_id' => $externalCartId,
+                'external_cart_token' => $externalCartToken
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('addToCart Exception', ['error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => 'Server error adding to cart.'], 500);
+        }
+    }
+
 
     public function search(Request $request)
     {

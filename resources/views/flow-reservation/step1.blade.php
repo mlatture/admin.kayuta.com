@@ -452,7 +452,10 @@
 
             // Add to Cart
             $(document).on('click', '.add-to-cart', function() {
-                 const $row = $(this).closest('tr');
+                const $btn = $(this);
+                const originalText = $btn.text();
+                
+                 const $row = $btn.closest('tr');
                 const adults = parseInt($row.find('.adults').val()) || 0;
                 const children = parseInt($row.find('.children').val()) || 0;
                 const siteLockChecked = $row.find('.site-lock-toggle').is(':checked');
@@ -460,24 +463,50 @@
                 // Get fee from the checkbox data attribute
                 const siteLockFeeVal = siteLockChecked ? parseFloat($row.find('.site-lock-toggle').data('fee')) : 0;
 
-                const item = {
-                    id: $(this).data('id'),
-                    name: $(this).data('name'),
-                    base: parseFloat($(this).data('base')),
-                    fee: parseFloat($(this).data('fee')), // This is platform fee (0)
-                    lock_fee_amount: siteLockFeeVal,      // Store the actual fee amount
-                    start_date: $(this).data('start'),
-                    end_date: $(this).data('end'),
+                const startDate = $btn.data('start');
+                const endDate = $btn.data('end');
+                const siteId = $btn.data('id');
+
+                $btn.prop('disabled', true).html('<i class="fas fa-spinner fa-spin"></i> Adding...');
+
+                $.post("{{ route('flow-reservation.add-to-cart') }}", {
+                    _token: "{{ csrf_token() }}",
+                    id: siteId,
+                    cid: startDate,
+                    cod: endDate,
                     occupants: {
                         adults: adults,
                         children: children
                     },
                     site_lock_fee: siteLockFeeStatus
-                };
+                }).done(function(res) {
+                    // On Success: Add to local UI array
+                     const item = {
+                        id: siteId,
+                        name: $btn.data('name'),
+                        base: parseFloat($btn.data('base')),
+                        fee: parseFloat($btn.data('fee')), // This is platform fee (0)
+                        lock_fee_amount: siteLockFeeVal,      // Store the actual fee amount
+                        start_date: startDate,
+                        end_date: endDate,
+                        occupants: {
+                            adults: adults,
+                            children: children
+                        },
+                        site_lock_fee: siteLockFeeStatus,
+                        external_cart_id: res.external_cart_id, // Store these if needed for later
+                        external_cart_token: res.external_cart_token
+                    };
 
-                cart.push(item);
-                updateCartUI();
-                $(this).prop('disabled', true).text('Added');
+                    cart.push(item);
+                    updateCartUI();
+                    $btn.html('<i class="fas fa-check"></i> Added');
+                    
+                }).fail(function(xhr) {
+                    console.error(xhr);
+                    alert('Failed to add to cart. Please try again.');
+                    $btn.prop('disabled', false).text(originalText);
+                });
             });
 
              // Remove from Cart
