@@ -72,6 +72,17 @@ class FlowReservationController extends Controller
             $draft->draft_id = $draftId;
         }
         
+        // Extract external_cart_id from items if available
+        $externalCartId = null;
+        if (!empty($request->cart_data)) {
+            foreach ($request->cart_data as $item) {
+                if (isset($item['external_cart_id'])) {
+                    $externalCartId = $item['external_cart_id'];
+                    break;
+                }
+            }
+        }
+
         $draft->fill([
             'cart_data' => $request->cart_data,
             'subtotal' => $request->totals['subtotal'] ?? 0,
@@ -82,6 +93,10 @@ class FlowReservationController extends Controller
             'discount_reason' => $request->input('discount_reason'),
             'coupon_code'    => $request->input('coupon_code'),
         ]);
+        
+        if ($externalCartId) {
+            $draft->external_cart_id = $externalCartId;
+        }
 
         $draft->save();
 
@@ -447,74 +462,36 @@ class FlowReservationController extends Controller
         $customer = User::findOrFail($draft->customer_id);
 
         try {
-            // Step 1: Create cart in external API
-            $cartResponse = Http::withHeaders([
-                'Accept' => 'application/json',
-                'Authorization' => 'Bearer ' . env('BOOKING_BEARER_KEY'),
-            ])->post(env('BOOK_API_URL') . 'v1/cart', [
-                'utm_source' => 'rvparkhq',
-                'utm_medium' => 'referral',
-                'utm_campaign' => 'flow_reservation',
-            ]);
-
-
-            if ($cartResponse->failed()) {
-                Log::error('Failed to create cart in external API', [
-                    'status' => $cartResponse->status(),
-                    'body' => $cartResponse->body(),
-                ]);
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Failed to initialize cart with booking service.',
-                ], 500);
-            }
-
-            $cartData = $cartResponse->json();
-            $externalCartId = $cartData['data']['cart_id'] ?? null;
-            $externalCartToken = $cartData['data']['cart_token'] ?? null;
-
-            if (!$externalCartId || !$externalCartToken) {
-                Log::error('External API did not return cart ID or token', ['response' => $cartData]);
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Invalid response from booking service.',
-                ], 500);
-            }
-
-
-
-            // Step 2: Add items to external cart
-            foreach ($draft->cart_data as $item) {
-
-                $itemResponse = Http::withHeaders([
-                    'Accept' => 'application/json',
-                    'Authorization' => 'Bearer ' . env('BOOKING_BEARER_KEY'),
-                ])->post(env('BOOK_API_URL') . 'v1/cart/items', [
-                    'cart_id' => $externalCartId,
-                    'token' => $externalCartToken,
-                    'site_id' => $item['id'],
-                    'start_date' => $item['start_date'] ?? $item['cid'],
-                    'end_date' => $item['end_date'] ?? $item['cod'],
-                    'occupants' => [
-                      'adults'   => $item['occupants']['adults'] ?? 2,
-                      'children' => $item['occupants']['children'] ?? 0,
-                    ],
-
-                    'site_lock_fee' => (($item['site_lock_fee'] ?? 'off') === 'on') 
-                        ? (float) (BusinessSettings::where('type', 'site_lock_fee')->value('value') ?? 0) 
-                        : 0,
-                 ]);
-
-
-                if ($itemResponse->failed()) {
-                    Log::error('Failed to add item to external cart', [
-                        'status' => $itemResponse->status(),
-                        'body' => $itemResponse->body(),
-                        'item' => $item,
-                    ]);
-                    // Continue with other items or fail completely?
-                    // For now, we'll continue
+        try {
+            // Retrieve cart info from draft or items
+            $externalCartId = $draft->external_cart_id;
+            $externalCartToken = null;
+            
+            // Try to find token in cart items
+            if (!empty($draft->cart_data)) {
+                foreach ($draft->cart_data as $item) {
+                    if (isset($item['external_cart_token'])) {
+                        $externalCartToken = $item['external_cart_token'];
+                        break;
+                    }
                 }
+                
+                // Fallback for ID if not on draft model
+                if (!$externalCartId) { 
+                     foreach ($draft->cart_data as $item) {
+                        if (isset($item['external_cart_id'])) {
+                            $externalCartId = $item['external_cart_id'];
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            if (!$externalCartId || !$externalCartToken) {
+                 return response()->json([
+                    'success' => false,
+                    'message' => 'Cart session expired or invalid. Please try creating a new reservation.',
+                ], 422);
             }
 
             // Step 3: Map payment method from POS drawer format to API format
