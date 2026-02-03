@@ -462,7 +462,6 @@ class FlowReservationController extends Controller
         $customer = User::findOrFail($draft->customer_id);
 
         try {
-        try {
             // Retrieve cart info from draft or items
             $externalCartId = $draft->external_cart_id;
             $externalCartToken = null;
