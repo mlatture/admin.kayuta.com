@@ -165,6 +165,7 @@ Route::prefix('admin')
             Route::get('/site-details', [\App\Http\Controllers\FlowReservationController::class, 'viewSiteDetails'])->name('flow-reservation.site-details');
             Route::get('/information', [\App\Http\Controllers\FlowReservationController::class, 'information'])->name('flow-reservation.information');
             Route::post('/apply-coupon', [\App\Http\Controllers\FlowReservationController::class, 'applyCoupon'])->name('flow-reservation.apply-coupon');
+            Route::post('/add-to-cart', [\App\Http\Controllers\FlowReservationController::class, 'addToCart'])->name('flow-reservation.add-to-cart');
         });
 
         Route::prefix('customers/{customer}/account')->group(function () {
