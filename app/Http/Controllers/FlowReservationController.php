@@ -308,6 +308,10 @@ class FlowReservationController extends Controller
                 return response()->json(['success' => false, 'message' => 'Invalid cart response.'], 500);
             }
 
+            // Fetch local site to get ratetier (hookup)
+            $localSite = Site::where('siteid', $validated['id'])->first();
+            $rateTier = $localSite ? $localSite->hookup : '';
+
             // 2. Add Item to that Cart
             $itemResponse = Http::withHeaders([
                 'Accept' => 'application/json',
@@ -318,6 +322,7 @@ class FlowReservationController extends Controller
                 'site_id' => $validated['id'],
                 'start_date' => $validated['cid'],
                 'end_date' => $validated['cod'],
+                'ratetier' => $rateTier,
                 'occupants' => [
                     'adults'   => $validated['occupants']['adults'] ?? 2,
                     'children' => $validated['occupants']['children'] ?? 0,
