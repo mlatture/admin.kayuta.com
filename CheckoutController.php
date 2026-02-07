@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Schema;
 use App\Model\{
     BusinessSetting, Coupon, Addon, Site, Reservation, Receipt, CardsOnFile, Payment, User
 };
@@ -17,6 +18,7 @@ use Exception;
 use Mail;
 use Illuminate\Support\Facades\Validator;
 use App\Services\ConfirmationCodeService;
+use App\Services\BookingContext;
 
 class CheckoutController extends Controller
 {
@@ -399,7 +401,7 @@ public function checkout(Request $request)
 
     // ✅ helper: column exists?
     $hasColumn = function (string $table, string $column): bool {
-        try { return \Schema::hasColumn($table, $column); } catch (\Throwable $e) { return false; }
+        try { return Schema::hasColumn($table, $column); } catch (\Throwable $e) { return false; }
     };
 
     // ✅ helper: normalize addons safely
@@ -588,9 +590,9 @@ public function checkout(Request $request)
                 'cid'         => $it['start_date'] ?? null,
                 'cod'         => $it['end_date'] ?? null,
                 'siteclass'   => data_get($it, 'site.siteclass'),
-                'total'       => (float) ($it['total'] ?? ($snap['total'] ?? 0)),
-                'totaltax'    => (float) ($snap['tax'] ?? 0),
-                'subtotal'    => (float) ($snap['subtotal'] ?? 0),
+                'total'       => (float) ($it['grand_total'] ?? ($snap['grand_total'] ?? 0)),
+                'totaltax'    => (float) ($snap['tax_total'] ?? 0),
+                'subtotal'    => (float) ($snap['sub_total'] ?? 0),
                 'nights'      => (int) ($it['nights'] ?? 1),
                 'hookups'     => data_get($it, 'site.hookup'),
                 'sitelock'    => (float) ($snap['sitelock_fee'] ?? 0),
@@ -642,6 +644,7 @@ public function checkout(Request $request)
 
                 'siteclass'      => $cart->siteclass,
                 'totalcharges'   => $cart->total,
+                'total'          => $cart->total,
                 'nights'         => $cart->nights,
                 'subtotal'       => $cart->subtotal,
                 'totaltax'       => $cart->totaltax,
@@ -748,299 +751,1566 @@ public function checkout(Request $request)
     }
 }
 
+// public function modificationReservations(Request $request)
+// {
+//     $validator = Validator::make($request->all(), [
+//         'draft_id'        => 'required|string|max:64',
+//         'customer_id'     => 'required|integer|min:1',
+//         'payment_method'  => 'required|in:card,ach,cash,gift_card',
 
- public function modificationReservations(Request $request)
-    {
-        $validator = Validator::make($request->all(), [
-            'draft_id'        => 'required|string|max:64',
-            'customer_id'     => 'required|integer|min:1',
-            'payment_method'  => 'required|in:card,ach,cash,gift_card',
+//         'xCardNum'        => 'required_if:payment_method,card|digits_between:13,19',
+//         'xExp'            => ['required_if:payment_method,card', 'regex:/^(0[1-9]|1[0-2])\/?([0-9]{2})$/'],
 
-            // card
-            'xCardNum'        => 'required_if:payment_method,card|digits_between:13,19',
-            'xExp'            => ['required_if:payment_method,card', 'regex:/^(0[1-9]|1[0-2])\/?([0-9]{2})$/'],
+//         'cash_tendered'   => 'required_if:payment_method,cash|numeric|min:0.01',
 
-            // cash
-            'cash_tendered'   => 'required_if:payment_method,cash|numeric|min:0.01',
+//         // optional: allow client to pass old breakdown; otherwise we use draft->old_reservations_breakdown
+//         'old_reservations_breakdown' => 'sometimes|array',
+//     ]);
 
-            // refund behavior
-            'refund_to_original' => 'nullable|boolean',
-        ]);
+//     if ($validator->fails()) {
+//         return response()->json([
+//             'ok'      => false,
+//             'message' => 'Validation failed.',
+//             'errors'  => $validator->errors(),
+//         ], 422);
+//     }
 
-        if ($validator->fails()) {
-            return response()->json([
-                'ok'      => false,
-                'message' => 'Validation failed.',
-                'errors'  => $validator->errors(),
-            ], 422);
+//     $v = $validator->validated();
+
+//     $hasColumn = function (string $table, string $column): bool {
+//         try { return \Schema::hasColumn($table, $column); } catch (\Throwable $e) { return false; }
+//     };
+
+//     $normalizeAddons = function ($addons) {
+//         if (empty($addons)) return [];
+//         if (is_string($addons)) {
+//             $decoded = json_decode($addons, true);
+//             return is_array($decoded) ? $decoded : [];
+//         }
+//         if (is_array($addons)) return $addons;
+//         return [];
+//     };
+
+//     $normalizeOccupants = function ($occ) {
+//         // your CartItemsController normalizes occupants; we keep it simple but compatible
+//         if (is_array($occ) && !empty($occ)) return $occ;
+//         return ['adults' => 1, 'children' => 0];
+//     };
+
+//     $generateConfirmationCode = function (): string {
+//         return 'CONF-' . strtoupper(substr(md5(uniqid('', true)), 0, 12));
+//     };
+
+//     $round2 = fn($n) => round((float)$n, 2);
+
+//     try {
+//         DB::beginTransaction();
+
+//         /* -------------------------------------------------------------
+//          | 1) Load draft
+//          * -------------------------------------------------------------*/
+//         $draft = \App\Model\ReservationDraft::where('draft_id', $v['draft_id'])
+//             ->lockForUpdate()
+//             ->first();
+
+//         if (!$draft) {
+//             DB::rollBack();
+//             return response()->json(['ok' => false, 'message' => 'Draft not found'], 404);
+//         }
+
+//         if ((int)$draft->customer_id !== (int)$v['customer_id']) {
+//             DB::rollBack();
+//             return response()->json(['ok' => false, 'message' => 'Unauthorized'], 403);
+//         }
+
+//         if (($draft->status ?? '') !== 'draft') {
+//             DB::rollBack();
+//             return response()->json(['ok' => false, 'message' => 'Draft already finalized'], 409);
+//         }
+
+//         $cartData = is_string($draft->cart_data)
+//             ? json_decode($draft->cart_data, true)
+//             : (array)$draft->cart_data;
+
+//         if (empty($cartData) || !is_array($cartData)) {
+//             DB::rollBack();
+//             return response()->json(['ok' => false, 'message' => 'Draft cart empty'], 400);
+//         }
+
+//         $originalIds = is_string($draft->original_reservation_ids)
+//             ? json_decode($draft->original_reservation_ids, true)
+//             : (array)$draft->original_reservation_ids;
+
+//         $originalIds = array_values(array_filter($originalIds));
+//         if (empty($originalIds)) {
+//             DB::rollBack();
+//             return response()->json(['ok' => false, 'message' => 'No original reservations found in draft'], 400);
+//         }
+
+//         $customer = \App\Model\User::findOrFail($draft->customer_id);
+
+//         /* -------------------------------------------------------------
+//          | 2) Load original reservations
+//          * -------------------------------------------------------------*/
+//         $originalReservations = \App\Model\Reservation::whereIn('id', $originalIds)
+//             ->lockForUpdate()
+//             ->get();
+
+//         if ($originalReservations->isEmpty()) {
+//             DB::rollBack();
+//             return response()->json(['ok' => false, 'message' => 'Original reservations missing'], 400);
+//         }
+
+//         /* -------------------------------------------------------------
+//          | 3) Refund breakdown (per old reservation)
+//          * -------------------------------------------------------------*/
+//         $oldBreakdown = $request->input('old_reservations_breakdown');
+//         if (!is_array($oldBreakdown)) {
+//             $oldBreakdown = !empty($draft->old_reservations_breakdown)
+//                 ? (is_string($draft->old_reservations_breakdown) ? json_decode($draft->old_reservations_breakdown, true) : (array)$draft->old_reservations_breakdown)
+//                 : null;
+//         }
+
+//         if (!is_array($oldBreakdown)) {
+//             $oldBreakdown = $originalReservations->map(function ($r) {
+//                 $total = (float)($r->totalcharges ?? $r->total ?? 0);
+//                 return [
+//                     'id' => (int)$r->id,
+//                     'siteid' => (string)$r->siteid,
+//                     'expected_full_refund' => $total,
+//                 ];
+//             })->values()->all();
+//         }
+
+//         $refundAmountByReservationId = [];
+//         foreach ($oldBreakdown as $b) {
+//             $rid = (int)($b['id'] ?? 0);
+//             if (!$rid) continue;
+//             $amt = (float)($b['expected_full_refund'] ?? $b['total'] ?? 0);
+//             if ($amt > 0) $refundAmountByReservationId[$rid] = $amt;
+//         }
+
+//         /* -------------------------------------------------------------
+//          | 4) Locate original payment
+//          * -------------------------------------------------------------*/
+//         $originalPaymentId = $originalReservations->pluck('payment_id')->filter()->first();
+//         $originalPayment   = $originalPaymentId ? \App\Model\Payment::find($originalPaymentId) : null;
+
+//         $origPaymentMethod = $originalPayment->method ?? null;
+//         $origGatewayRef    = $originalPayment->x_ref_num ?? null;
+//         $origIsGateway     = !empty($origGatewayRef);
+
+//         /* -------------------------------------------------------------
+//          | 5) Create/load ChannelCart (DIRECT DB, like CartController@store)
+//          * -------------------------------------------------------------*/
+//         $channelCartId = (int)($draft->external_cart_id ?? 0);
+//         $cartToken = null;
+
+//         if ($channelCartId > 0) {
+//             $cartRow = DB::table('channel_carts')->lockForUpdate()->where('id', $channelCartId)->first();
+//             if (!$cartRow) $channelCartId = 0;
+//             else $cartToken = (string)($cartRow->token ?? '');
+//         }
+
+//         if ($channelCartId <= 0) {
+//             // If you DON'T have auth_scope here, store nulls for org/channel ids (same as controller does when auth missing)
+//             $auth = request()->attributes->get('auth_scope', []);
+//             $orgId = (int)($auth['property_id'] ?? 0);
+//             $bookingChannelId = (int)($auth['booking_channel_id'] ?? 0);
+//             $channelId = (int)($auth['channel_id'] ?? 0);
+
+//             $timeout = (int) config('cart.ttl_seconds', 1800);
+//             $cartToken = (string) \Illuminate\Support\Str::uuid();
+
+//             $channelCartId = DB::table('channel_carts')->insertGetId([
+//                 'organization_id'    => $orgId ?: null,
+//                 'booking_channel_id' => $bookingChannelId ?: null,
+//                 'channel_id'         => $channelId ?: null,
+//                 'token'              => $cartToken,
+//                 'status'             => 'open',
+//                 'expires_at'         => now()->addSeconds($timeout),
+//                 'currency'           => 'USD',
+//                 'utm_source'         => 'modification',
+//                 'utm_medium'         => 'api',
+//                 'utm_campaign'       => 'reservation_modification',
+//                 'created_at'         => now(),
+//                 'updated_at'         => now(),
+//             ]);
+
+//             if ($hasColumn('reservation_drafts', 'external_cart_id')) {
+//                 $draft->external_cart_id = $channelCartId;
+//             }
+//             $draft->save();
+//         }
+
+//         if (!$cartToken) {
+//             $cartRow = DB::table('channel_carts')->lockForUpdate()->where('id', $channelCartId)->first();
+//             $cartToken = (string)($cartRow->token ?? '');
+//             if (!$cartToken) {
+//                 DB::rollBack();
+//                 return response()->json([
+//                     'ok' => false,
+//                     'message' => 'ChannelCart token missing',
+//                     'errors' => ['cart_id' => $channelCartId],
+//                 ], 500);
+//             }
+//         }
+
+//         /* -------------------------------------------------------------
+//          | 6) Build cart_itemms DIRECT DB (like CartItemsController@store)
+//          |    Then reservation.cartid = ch_<cart_itemms.id>
+//          * -------------------------------------------------------------*/
+//         $newCartItemIds = [];
+//         $newCartIds = [];
+//         $primaryCartId = null;
+
+//         foreach ($cartData as $idx => $item) {
+//             if (!is_array($item)) continue;
+
+//             // Your draft uses `id` for site code (JL07)
+//             $siteId = $item['siteid'] ?? $item['site_id'] ?? $item['id'] ?? null;
+//             $start  = $item['start_date'] ?? null;
+//             $end    = $item['end_date'] ?? null;
+
+//             if (!$siteId || !$start || !$end) continue;
+
+//             // validate site exists (exactly like CartItemsController)
+//             $siteRow = DB::table('sites')->where('siteid', (string)$siteId)->first();
+//             if (!$siteRow) {
+//                 DB::rollBack();
+//                 return response()->json([
+//                     'ok' => false,
+//                     'message' => 'Invalid site_id in draft cart_data',
+//                     'errors' => ['site_id' => $siteId, 'idx' => $idx],
+//                 ], 422);
+//             }
+
+//             // lock cart
+//             $cartRow = DB::table('channel_carts')->lockForUpdate()->where('id', $channelCartId)->first();
+//             if (!$cartRow) {
+//                 DB::rollBack();
+//                 return response()->json(['ok' => false, 'message' => 'Cart not found'], 404);
+//             }
+
+//             if (!hash_equals((string)$cartRow->token, (string)$cartToken)) {
+//                 DB::rollBack();
+//                 return response()->json([
+//                     'ok' => false,
+//                     'message' => 'INVALID_CART_TOKEN (draft/cart token mismatch)',
+//                     'errors' => ['cart_id' => $channelCartId],
+//                 ], 401);
+//             }
+
+//             if (now()->greaterThanOrEqualTo($cartRow->expires_at)) {
+//                 DB::rollBack();
+//                 return response()->json(['ok' => false, 'message' => 'CART_EXPIRED'], 410);
+//             }
+
+//             $occupants = $normalizeOccupants($item['occupants'] ?? $item['occupants_json'] ?? null);
+//             $addons    = $normalizeAddons($item['add_ons'] ?? $item['addons_json'] ?? []);
+//             $siteLockFee = (float)($item['lock_fee_amount'] ?? $item['site_lock_fee'] ?? 0);
+//             $ratetier = $item['ratetier'] ?? null;
+
+//             $payload = [
+//                 'site_id'       => (string)$siteId,
+//                 'site_lock_fee' => $siteLockFee,
+//                 'start_date'    => Carbon::parse($start)->format('Y-m-d'),
+//                 'end_date'      => Carbon::parse($end)->format('Y-m-d'),
+//                 'ratetier'      => $ratetier,
+//                 'occupants'     => $occupants,
+//                 'add_ons'       => $addons,
+//             ];
+//             $dedupeKey = sha1(json_encode($payload));
+
+//             // duplicate check
+//             $existing = \App\Model\CartItemm::where('channel_cart_id', $channelCartId)
+//                 ->where('dedupe_key', $dedupeKey)
+//                 ->lockForUpdate()
+//                 ->first();
+
+//             if ($existing) {
+//                 $newCartItemIds[$idx] = (int)$existing->id;
+//                 $newCartIds[$idx]     = 'ch_' . (int)$existing->id;
+//                 if (!$primaryCartId) $primaryCartId = $newCartIds[$idx];
+//                 continue;
+//             }
+
+//             // overlap check: reservations
+//             $overlap = DB::table('reservations')
+//                 ->whereIn('status', ['confirmed', 'pending'])
+//                 ->where(function ($q) use ($payload) {
+//                     $q->where('cid', '<', $payload['end_date'])
+//                       ->where('cod', '>', $payload['start_date']);
+//                 })
+//                 ->exists();
+
+//             if ($overlap) {
+//                 DB::rollBack();
+//                 return response()->json([
+//                     'ok' => false,
+//                     'message' => 'OVERLAPPING_RESERVATION',
+//                     'errors' => ['site_id' => $siteId, 'start' => $payload['start_date'], 'end' => $payload['end_date']],
+//                 ], 409);
+//             }
+
+//             // overlap check: holds from other carts
+//             $holds = \App\Model\InventoryHoldd::where('site_id', (string)$siteId)
+//                 ->where('hold_expires_at', '>', now())
+//                 ->where(function ($q) use ($payload) {
+//                     $q->where('start_date', '<', $payload['end_date'])
+//                       ->where('end_date', '>', $payload['start_date']);
+//                 })
+//                 ->lockForUpdate()
+//                 ->get();
+
+//             foreach ($holds as $h) {
+//                 if ((int)$h->channel_cart_id !== (int)$chaBookingContextnnelCartId) {
+//                     DB::rollBack();
+//                     return response()->json([
+//                         'ok' => false,
+//                         'message' => 'OVERLAPPING_RESERVATION',
+//                         'errors' => ['site_id' => $siteId],
+//                     ], 409);
+//                 }
+//             }
+
+//             // price snapshot (same as controller)
+//             // You MUST have these classes/services available in this controller context.
+//             // dd('sadasd');
+//             $context = new (
+//                 $payload['start_date'],
+//                 $payload['end_date'],
+//                 $payload['ratetier'],
+//                 $payload['site_lock_fee']
+//             );
+
+//             $priceSnapshot = $this->priceService->quote($context);
+
+//             // extend cart expiry (same as controller)
+//             $timeoutMin = (int) config('business.cart_timeout_minutes', 30);
+//             $newExpires = now()->addMinutes($timeoutMin);
+
+//             DB::table('channel_carts')->where('id', $channelCartId)->update([
+//                 'expires_at' => $newExpires,
+//                 'updated_at' => now(),
+//             ]);
+
+//             // create cart_itemms
+//             $itemId = DB::table('cart_itemms')->insertGetId([
+//                 'channel_cart_id'      => $channelCartId,
+//                 'site_id'              => (string)$siteId,
+//                 'start_date'           => $payload['start_date'],
+//                 'end_date'             => $payload['end_date'],
+//                 'occupants_json'        => json_encode($payload['occupants']),
+//                 'addons_json'           => json_encode($payload['add_ons']),
+//                 'price_snapshot_json'   => json_encode($priceSnapshot),
+//                 'dedupe_key'            => $dedupeKey,
+//                 'hold_expires_at'       => $newExpires,
+//                 'status'                => 'active',
+//                 'created_at'            => now(),
+//                 'updated_at'            => now(),
+//             ]);
+
+//             // create inventory hold
+//             DB::table('inventory_holdds')->insert([
+//                 'site_id'         => (string)$siteId,
+//                 'start_date'      => $payload['start_date'],
+//                 'end_date'        => $payload['end_date'],
+//                 'channel_cart_id' => $channelCartId,
+//                 'cart_item_id'    => $itemId,
+//                 'hold_expires_at' => $newExpires,
+//                 'created_at'      => now(),
+//                 'updated_at'      => now(),
+//             ]);
+
+//             $newCartItemIds[$idx] = (int)$itemId;
+//             $newCartIds[$idx]     = 'ch_' . (int)$itemId;
+//             if (!$primaryCartId) $primaryCartId = $newCartIds[$idx];
+//         }
+
+//         if (!$primaryCartId) {
+//             DB::rollBack();
+//             return response()->json([
+//                 'ok' => false,
+//                 'message' => 'Unable to build any cart items for this draft',
+//                 'errors' => ['cart_data' => $cartData],
+//             ], 400);
+//         }
+
+//         /* -------------------------------------------------------------
+//          | 7) Refund (ONLY if amounts > 0) + ONE gateway refund total
+//          * -------------------------------------------------------------*/
+//         $refunds = [];
+//         $refundPlan = [];
+//         $refundedTotal = 0.0;
+
+//         foreach ($originalReservations as $r) {
+//             $rid = (int)$r->id;
+//             $amt = (float)($refundAmountByReservationId[$rid] ?? 0);
+//             if ($amt > 0) {
+//                 $refundPlan[] = ['reservation' => $r, 'amount' => $amt];
+//                 $refundedTotal += $amt;
+//             }
+//         }
+
+//         $gatewayRefundXRef = null;
+//         $gatewayRefundResp = null;
+//         $gatewayRefundStatus = 'manual';
+
+//         if ($origIsGateway && $refundedTotal > 0) {
+//             $post = [
+//                 'xKey'             => config('services.cardknox.api_key'),
+//                 'xVersion'         => '4.5.5',
+//                 'xCommand'         => 'cc:Refund',
+//                 'xAmount'          => $round2($refundedTotal),
+//                 'xRefNum'          => $origGatewayRef,
+//                 'xInvoice'         => 'REF-' . uniqid() . '-' . now()->format('YmdHis'),
+//                 'xSoftwareName'    => 'KayutaLake',
+//                 'xSoftwareVersion' => '1.0',
+//             ];
+
+//             $ch = curl_init('https://x1.cardknox.com/gateway');
+//             curl_setopt_array($ch, [
+//                 CURLOPT_RETURNTRANSFER => true,
+//                 CURLOPT_POSTFIELDS     => http_build_query($post),
+//                 CURLOPT_HTTPHEADER     => [
+//                     'Content-type: application/x-www-form-urlencoded',
+//                     'X-Recurring-Api-Version: 1.0',
+//                 ],
+//             ]);
+
+//             $raw = curl_exec($ch);
+//             if ($raw === false) {
+//                 DB::rollBack();
+//                 return response()->json(['ok' => false, 'message' => 'Unable to contact refund gateway.'], 502);
+//             }
+
+//             parse_str($raw, $resp);
+//             $gatewayRefundResp = $resp;
+
+//             if (($resp['xStatus'] ?? '') !== 'Approved') {
+//                 DB::rollBack();
+//                 return response()->json([
+//                     'ok'      => false,
+//                     'message' => $resp['xError'] ?? 'Refund failed',
+//                     'errors'  => ['gateway' => $resp],
+//                 ], 400);
+//             }
+
+//             $gatewayRefundXRef   = $resp['xRefNum'] ?? null;
+//             $gatewayRefundStatus = 'approved';
+//         }
+
+//         foreach ($refundPlan as $i => $row) {
+//             $r = $row['reservation'];
+//             $rid = (int)$r->id;
+//             $refundAmount = (float)$row['amount'];
+//             if ($refundAmount <= 0) continue;
+
+//             $refundMethod = $origPaymentMethod ?: 'Cash';
+//             $refundXRef   = null;
+//             $refundStatus = 'manual';
+//             $gatewayResp  = null;
+
+//             if ($origIsGateway) {
+//                 $refundMethod = 'Card';
+//                 $refundStatus = $gatewayRefundStatus;
+//                 $refundXRef   = ($i === 0) ? $gatewayRefundXRef : null;
+//                 $gatewayResp  = ($i === 0) ? $gatewayRefundResp : null;
+//             }
+
+//             $refundPayload = [
+//                 'cartid'          => $primaryCartId, // ✅ ch_<cart_itemms.id> like ch_525
+//                 'reservations_id' => $rid,
+//                 'amount'          => $refundAmount,
+//                 'method'          => $refundMethod,
+//                 'reason'          => 'Reservation Modification',
+//                 'x_ref_num'       => $refundXRef,
+//                 'created_by'      => auth()->user()->name ?? 'System',
+//             ];
+
+//             if ($hasColumn('refunds', 'status')) $refundPayload['status'] = $refundStatus;
+
+//             if ($hasColumn('refunds', 'meta')) {
+//                 $refundPayload['meta'] = json_encode([
+//                     'type'                => 'modification_refund',
+//                     'draft_id'            => $draft->draft_id,
+//                     'original_payment_id' => $originalPaymentId,
+//                     'refund_mode'         => $origIsGateway ? 'gateway_one_refund_allocated' : 'manual',
+//                     'gateway_refund_xref' => $gatewayRefundXRef,
+//                     'gateway_response'    => $gatewayResp,
+//                 ]);
+//             }
+
+//             $refundRow = \App\Model\Refund::create($refundPayload);
+
+//             $refunds[] = [
+//                 'refund_id'      => (int)$refundRow->id,
+//                 'reservation_id' => $rid,
+//                 'siteid'         => (string)$r->siteid,
+//                 'amount'         => $round2($refundAmount),
+//                 'method'         => $refundMethod,
+//                 'gateway_ref'    => $refundXRef,
+//                 'status'         => $refundStatus,
+//             ];
+//         }
+
+//         /* -------------------------------------------------------------
+//          | 8) Cancel originals
+//          * -------------------------------------------------------------*/
+//         $cancelledReservations = [];
+//         foreach ($originalReservations as $r) {
+//             $r->status = 'Cancelled';
+//             if ($hasColumn('reservations', 'cancelled_at')) $r->cancelled_at = now();
+//             if ($hasColumn('reservations', 'cancel_reason')) $r->cancel_reason = 'Modification';
+//             $r->save();
+
+//             $cancelledReservations[] = [
+//                 'reservation_id'  => (int)$r->id,
+//                 'siteid'          => (string)$r->siteid,
+//                 'refunded_amount' => $round2((float)($refundAmountByReservationId[$r->id] ?? 0)),
+//             ];
+//         }
+
+//         /* -------------------------------------------------------------
+//          | 9) Charge new total (draft grand_total)
+//          * -------------------------------------------------------------*/
+//         $newTotal = (float)$draft->grand_total;
+//         if ($newTotal < 0) $newTotal = 0;
+
+//         $paymentId = null;
+//         $paymentMethodLabel = '';
+//         $xRefNumNew = null;
+//         $xAuthCodeNew = '';
+//         $gatewaySaleResp = [];
+
+//         if ($newTotal > 0) {
+//             if ($v['payment_method'] === 'card') {
+//                 $post = [
+//                     'xKey'             => config('services.cardknox.api_key'),
+//                     'xVersion'         => '4.5.5',
+//                     'xCommand'         => 'cc:Sale',
+//                     'xAmount'          => $newTotal,
+//                     'xCardNum'         => $v['xCardNum'],
+//                     'xExp'             => str_replace('/', '', $v['xExp']),
+//                     'xSoftwareVersion' => '1.0',
+//                     'xSoftwareName'    => 'KayutaLake',
+//                     'xInvoice'         => 'RECUR-' . uniqid() . '-' . now()->format('YmdHis'),
+//                 ];
+
+//                 $ch = curl_init('https://x1.cardknox.com/gateway');
+//                 curl_setopt_array($ch, [
+//                     CURLOPT_RETURNTRANSFER => true,
+//                     CURLOPT_POSTFIELDS     => http_build_query($post),
+//                     CURLOPT_HTTPHEADER     => [
+//                         'Content-type: application/x-www-form-urlencoded',
+//                         'X-Recurring-Api-Version: 1.0',
+//                     ],
+//                 ]);
+
+//                 $raw = curl_exec($ch);
+//                 if ($raw === false) {
+//                     DB::rollBack();
+//                     return response()->json(['ok' => false, 'message' => 'Unable to contact payment gateway.'], 502);
+//                 }
+
+//                 parse_str($raw, $sale);
+//                 $gatewaySaleResp = $sale;
+
+//                 if (($sale['xStatus'] ?? '') !== 'Approved') {
+//                     DB::rollBack();
+//                     return response()->json([
+//                         'ok' => false,
+//                         'message' => $sale['xError'] ?? 'Payment failed',
+//                         'errors' => ['gateway' => $sale],
+//                     ], 400);
+//                 }
+
+//                 $paymentMethodLabel = $sale['xCardType'] ?? 'Card';
+//                 $xRefNumNew = $sale['xRefNum'] ?? null;
+//                 $xAuthCodeNew = $sale['xAuthCode'] ?? ('MOD-' . uniqid());
+
+//             } elseif ($v['payment_method'] === 'cash') {
+//                 $cashTendered = (float)$v['cash_tendered'];
+//                 if ($cashTendered < $newTotal) {
+//                     DB::rollBack();
+//                     return response()->json([
+//                         'ok' => false,
+//                         'message' => 'Cash tendered must be at least the new total amount.',
+//                         'errors' => ['cash_tendered' => ['Not enough cash tendered']],
+//                     ], 422);
+//                 }
+
+//                 $paymentMethodLabel = 'Cash';
+//                 $xAuthCodeNew = 'CASH-' . now()->format('YmdHis') . '-' . uniqid();
+//             } else {
+//                 $paymentMethodLabel = ucfirst(str_replace('_', ' ', $v['payment_method']));
+//                 $xAuthCodeNew = strtoupper($v['payment_method']) . '-' . strtoupper(uniqid());
+//             }
+
+//             $paymentPayload = [
+//                 'customernumber' => $customer->id,
+//                 'method'         => $paymentMethodLabel ?: ucfirst($v['payment_method']),
+//                 'cartid'         => $primaryCartId, // ✅ primary cartid like checkout
+//                 'email'          => $customer->email,
+//                 'payment'        => $newTotal,
+//                 'receipt'        => rand(1000, 9999),
+//                 'x_ref_num'      => $xRefNumNew,
+//             ];
+
+//             if ($hasColumn('payments', 'meta')) {
+//                 $paymentPayload['meta'] = json_encode([
+//                     'type'            => 'modification',
+//                     'draft_id'        => $draft->draft_id,
+//                     'channel_cart_id' => $channelCartId,
+//                     'refunded_total'  => $round2($refundedTotal),
+//                     'sale_gateway'    => $gatewaySaleResp,
+//                     'refund_gateway'  => $gatewayRefundResp,
+//                     'refund_xref'     => $gatewayRefundXRef,
+//                     'primary_cartid'  => $primaryCartId,
+//                 ]);
+//             }
+
+//             $paymentRow = \App\Model\Payment::create($paymentPayload);
+//             $paymentId = $paymentRow->id ?? null;
+//         }
+
+//         /* -------------------------------------------------------------
+//          | 10) Create NEW reservations (cartid = ch_<cart_itemms.id>)
+//          * -------------------------------------------------------------*/
+//         $groupConfirmationCode = 'CONF-' . strtoupper(substr(md5(uniqid('', true)), 0, 10));
+//         $newReservations = [];
+
+//         foreach ($cartData as $idx => $item) {
+//             if (!is_array($item)) continue;
+
+//             $siteid = $item['siteid'] ?? $item['site_id'] ?? $item['id'] ?? null;
+//             if (!$siteid) continue;
+
+//             $site     = \App\Model\Site::where('siteid', $siteid)->first();
+//             $rateTier = $site ? \App\Model\RateTier::where('tier', $site->hookup)->first() : null;
+
+//             $inDate  = !empty($item['start_date']) ? Carbon::parse($item['start_date'])->format('Y-m-d') : null;
+//             $outDate = !empty($item['end_date'])   ? Carbon::parse($item['end_date'])->format('Y-m-d')   : null;
+
+//             $inTime = ($rateTier && !empty($rateTier->check_in))
+//                 ? Carbon::parse($rateTier->check_in)->format('H:i:s')
+//                 : '15:00:00';
+
+//             $outTime = ($rateTier && !empty($rateTier->check_out))
+//                 ? Carbon::parse($rateTier->check_out)->format('H:i:s')
+//                 : '11:00:00';
+
+//             $scheduledCid = $inDate  ? "{$inDate} {$inTime}"   : null;
+//             $scheduledCod = $outDate ? "{$outDate} {$outTime}" : null;
+
+//             $cartidForThisReservation = $newCartIds[$idx] ?? null;
+//             if (!$cartidForThisReservation) {
+//                 DB::rollBack();
+//                 return response()->json([
+//                     'ok' => false,
+//                     'message' => 'Missing cartid for reservation (cart_itemms not created)',
+//                     'errors' => ['idx' => $idx],
+//                 ], 500);
+//             }
+
+//             // totals
+//             $base     = (float)($item['base'] ?? 0);
+//             $sitelock = (float)($item['lock_fee_amount'] ?? 0);
+
+//             // If modification should charge ONLY lock fee, use $sitelock.
+//             // If it should be base+lock, use $base + $sitelock.
+//             // I'll use item['total'] if present, else base+lock.
+//             $totalCharges = (float)($item['total'] ?? ($base + $sitelock));
+
+//             $reservationData = [
+//                 'xconfnum'       => $xAuthCodeNew ?: ('MOD-' . uniqid()),
+//                 'cartid'         => $cartidForThisReservation, // ✅ ch_<cart_itemms.id>
+//                 'source'         => 'Online Booking',
+//                 'createdby'      => 'API',
+//                 'fname'          => $customer->f_name ?? '',
+//                 'lname'          => $customer->l_name ?? '',
+//                 'customernumber' => $customer->id,
+//                 'siteid'         => $siteid,
+//                 'cid'            => $scheduledCid,
+//                 'cod'            => $scheduledCod,
+//                 'siteclass'      => $item['siteclass'] ?? ($site->siteclass ?? null),
+//                 'subtotal'       => (float)($item['subtotal'] ?? $base),
+//                 'totaltax'       => 0,
+//                 'nights'         => ($inDate && $outDate) ? Carbon::parse($outDate)->diffInDays(Carbon::parse($inDate)) : 1,
+//                 'sitelock'       => $sitelock,
+//                 'receipt'        => rand(1000, 9999),
+//                 'totalcharges'   => $totalCharges,
+//                 'total'          => $totalCharges,
+//             ];
+
+//             $addonsPayload = $normalizeAddons($item['add_ons'] ?? $item['addons_json'] ?? []);
+//             if (!empty($addonsPayload) && $hasColumn('reservations', 'addons_json')) {
+//                 $reservationData['addons_json'] = $addonsPayload;
+//             }
+
+//             if ($paymentId && $hasColumn('reservations', 'payment_id')) {
+//                 $reservationData['payment_id'] = $paymentId;
+//             }
+
+//             if ($hasColumn('reservations', 'group_confirmation_code')) {
+//                 $reservationData['group_confirmation_code'] = $groupConfirmationCode;
+//             }
+
+//             $reservation = \App\Model\Reservation::create($reservationData);
+
+//             if ($hasColumn('reservations', 'confirmation_code') && empty($reservation->confirmation_code)) {
+//                 $tries = 0;
+//                 do {
+//                     $tries++;
+//                     $code = $generateConfirmationCode();
+//                     $exists = \App\Model\Reservation::where('confirmation_code', $code)->exists();
+//                 } while ($exists && $tries < 5);
+
+//                 $reservation->confirmation_code = $code;
+//                 $reservation->save();
+//             }
+
+//             $newReservations[] = [
+//                 'reservation_id'    => (int)$reservation->id,
+//                 'siteid'            => (string)$siteid,
+//                 'cid'               => (string)$reservation->cid,
+//                 'cod'               => (string)$reservation->cod,
+//                 'confirmation_code' => $reservation->confirmation_code ?? null,
+//                 'payment_id'        => $paymentId,
+//                 'cartid'            => $cartidForThisReservation,
+//                 'cart_itemm_id'     => (int)($newCartItemIds[$idx] ?? 0),
+//             ];
+//         }
+
+//         /* -------------------------------------------------------------
+//          | 11) Finalize draft
+//          * -------------------------------------------------------------*/
+//         $draft->status = 'confirmed';
+//         if ($hasColumn('reservation_drafts', 'payment_id')) $draft->payment_id = $paymentId;
+//         $draft->save();
+
+//         DB::commit();
+
+//         return response()->json([
+//             'ok' => true,
+//             'draft_id' => $draft->draft_id,
+//             'channel_cart_id' => $channelCartId,
+//             'primary_cartid' => $primaryCartId,
+
+//             'refunds' => $refunds,
+//             'refund_summary' => [
+//                 'count' => count($refunds),
+//                 'total' => $round2($refundedTotal),
+//             ],
+
+//             'payment' => [
+//                 'payment_id'  => $paymentId,
+//                 'method'      => $paymentMethodLabel ?: ucfirst($v['payment_method']),
+//                 'amount'      => $round2($newTotal),
+//                 'gateway_ref' => $xRefNumNew,
+//                 'cartid'      => $primaryCartId,
+//             ],
+
+//             'new_reservations' => $newReservations,
+//             'cancelled_reservations' => $cancelledReservations,
+//         ], 200);
+
+//     } catch (\Throwable $e) {
+//         DB::rollBack();
+
+//         return response()->json([
+//             'ok' => false,
+//             'message' => 'Modification checkout failed',
+//             'error' => $e->getMessage(),
+//             'file' => $e->getFile(),
+//             'line' => $e->getLine(),
+//         ], 500);
+//     }
+// }
+
+
+public function modificationReservations(Request $request)
+{
+    $validator = Validator::make($request->all(), [
+        'draft_id'        => 'required|string|max:64',
+        'customer_id'     => 'required|integer|min:1',
+        'payment_method'  => 'required|in:card,ach,cash,gift_card',
+
+        'xCardNum'        => 'required_if:payment_method,card|digits_between:13,19',
+        'xExp'            => ['required_if:payment_method,card', 'regex:/^(0[1-9]|1[0-2])\/?([0-9]{2})$/'],
+
+        'cash_tendered'   => 'required_if:payment_method,cash|numeric|min:0.01',
+
+        'old_reservations_breakdown' => 'sometimes|array',
+    ]);
+
+    if ($validator->fails()) {
+        return response()->json([
+            'ok'      => false,
+            'message' => 'Validation failed.',
+            'errors'  => $validator->errors(),
+        ], 422);
+    }
+
+    $v = $validator->validated();
+
+    $hasColumn = function (string $table, string $column): bool {
+        try { return Schema::hasColumn($table, $column); } catch (\Throwable $e) { return false; }
+    };
+
+    $normalizeAddons = function ($addons) {
+        if (empty($addons)) return [];
+        if (is_string($addons)) {
+            $decoded = json_decode($addons, true);
+            return is_array($decoded) ? $decoded : [];
+        }
+        if (is_array($addons)) return $addons;
+        return [];
+    };
+
+    $normalizeOccupants = function ($occ) {
+        if (is_array($occ) && !empty($occ)) return $occ;
+        return ['adults' => 1, 'children' => 0];
+    };
+
+    $generateConfirmationCode = function (): string {
+        return 'CONF-' . strtoupper(substr(md5(uniqid('', true)), 0, 12));
+    };
+
+    $round2 = fn($n) => round((float)$n, 2);
+
+    try {
+        DB::beginTransaction();
+
+        /* -------------------------------------------------------------
+         | 1) Load draft
+         * -------------------------------------------------------------*/
+        $draft = \App\Model\ReservationDraft::where('draft_id', $v['draft_id'])
+            ->lockForUpdate()
+            ->first();
+
+        if (!$draft) {
+            DB::rollBack();
+            return response()->json(['ok' => false, 'message' => 'Draft not found'], 404);
         }
 
-        $v = $validator->validated();
+        if ((int)$draft->customer_id !== (int)$v['customer_id']) {
+            DB::rollBack();
+            return response()->json(['ok' => false, 'message' => 'Unauthorized'], 403);
+        }
 
-        $hasColumn = fn ($t, $c) => \Schema::hasColumn($t, $c);
+        if (($draft->status ?? '') !== 'draft') {
+            DB::rollBack();
+            return response()->json(['ok' => false, 'message' => 'Draft already finalized'], 409);
+        }
 
-        $itemKey = function (array $i) {
-            $site = $i['siteid'] ?? $i['site_id'] ?? $i['id'] ?? '';
-            return $site . '|' . ($i['start_date'] ?? '') . '|' . ($i['end_date'] ?? '');
-        };
+        $cartData = is_string($draft->cart_data)
+            ? json_decode($draft->cart_data, true)
+            : (array)$draft->cart_data;
 
-        try {
-            DB::beginTransaction();
+        if (empty($cartData) || !is_array($cartData)) {
+            DB::rollBack();
+            return response()->json(['ok' => false, 'message' => 'Draft cart empty'], 400);
+        }
 
-            /* -------------------------------------------------------------
-             | 1. Load draft
-             * -------------------------------------------------------------*/
-            $draft = \App\Models\ReservationDraft::where('draft_id', $v['draft_id'])
-                ->lockForUpdate()
-                ->first();
+        $originalIds = is_string($draft->original_reservation_ids)
+            ? json_decode($draft->original_reservation_ids, true)
+            : (array)$draft->original_reservation_ids;
 
-            if (!$draft) {
-                DB::rollBack();
-                return response()->json(['ok' => false, 'message' => 'Draft not found'], 404);
+        $originalIds = array_values(array_filter($originalIds));
+        if (empty($originalIds)) {
+            DB::rollBack();
+            return response()->json(['ok' => false, 'message' => 'No original reservations found in draft'], 400);
+        }
+
+        $customer = \App\Model\User::findOrFail($draft->customer_id);
+
+        /* -------------------------------------------------------------
+         | 2) Load original reservations
+         * -------------------------------------------------------------*/
+        $originalReservations = \App\Model\Reservation::whereIn('id', $originalIds)
+            ->lockForUpdate()
+            ->get();
+
+        if ($originalReservations->isEmpty()) {
+            DB::rollBack();
+            return response()->json(['ok' => false, 'message' => 'Original reservations missing'], 400);
+        }
+
+        /* -------------------------------------------------------------
+         | 3) Refund breakdown
+         * -------------------------------------------------------------*/
+        $oldBreakdown = $request->input('old_reservations_breakdown');
+        if (!is_array($oldBreakdown)) {
+            $oldBreakdown = !empty($draft->old_reservations_breakdown)
+                ? (is_string($draft->old_reservations_breakdown) ? json_decode($draft->old_reservations_breakdown, true) : (array)$draft->old_reservations_breakdown)
+                : null;
+        }
+
+        if (!is_array($oldBreakdown)) {
+            $oldBreakdown = $originalReservations->map(function ($r) {
+                $total = (float)($r->totalcharges ?? $r->total ?? 0);
+                return [
+                    'id' => (int)$r->id,
+                    'siteid' => (string)$r->siteid,
+                    'expected_full_refund' => $total,
+                ];
+            })->values()->all();
+        }
+
+        $refundAmountByReservationId = [];
+        foreach ($oldBreakdown as $b) {
+            $rid = (int)($b['id'] ?? 0);
+            if (!$rid) continue;
+            $amt = (float)($b['expected_full_refund'] ?? $b['total'] ?? 0);
+            if ($amt > 0) $refundAmountByReservationId[$rid] = $amt;
+        }
+
+        /* -------------------------------------------------------------
+         | 4) Locate original payment
+         * -------------------------------------------------------------*/
+        $originalPaymentId = $originalReservations->pluck('payment_id')->filter()->first();
+        $originalPayment   = $originalPaymentId ? \App\Model\Payment::find($originalPaymentId) : null;
+
+        $origPaymentMethod = $originalPayment->method ?? null;
+        $origGatewayRef    = $originalPayment->x_ref_num ?? null;
+        $origIsGateway     = !empty($origGatewayRef);
+
+        /* -------------------------------------------------------------
+         | 5) Create/load ChannelCart (DIRECT DB)
+         * -------------------------------------------------------------*/
+        $channelCartId = (int)($draft->external_cart_id ?? 0);
+        $cartToken = null;
+
+        if ($channelCartId > 0) {
+            $cartRow = DB::table('channel_carts')->lockForUpdate()->where('id', $channelCartId)->first();
+            if (!$cartRow) $channelCartId = 0;
+            else $cartToken = (string)($cartRow->token ?? '');
+        }
+
+        if ($channelCartId <= 0) {
+            $auth = request()->attributes->get('auth_scope', []);
+            $orgId = (int)($auth['property_id'] ?? 0);
+            $bookingChannelId = (int)($auth['booking_channel_id'] ?? 0);
+            $channelId = (int)($auth['channel_id'] ?? 0);
+
+            $timeout = (int) config('cart.ttl_seconds', 1800);
+            $cartToken = (string) \Illuminate\Support\Str::uuid();
+
+            $channelCartId = DB::table('channel_carts')->insertGetId([
+                'organization_id'    => $orgId ?: null,
+                'booking_channel_id' => $bookingChannelId ?: null,
+                'channel_id'         => $channelId ?: null,
+                'token'              => $cartToken,
+                'status'             => 'open',
+                'expires_at'         => now()->addSeconds($timeout),
+                'currency'           => 'USD',
+                'utm_source'         => 'modification',
+                'utm_medium'         => 'api',
+                'utm_campaign'       => 'reservation_modification',
+                'created_at'         => now(),
+                'updated_at'         => now(),
+            ]);
+
+            if ($hasColumn('reservation_drafts', 'external_cart_id')) {
+                $draft->external_cart_id = $channelCartId;
             }
+            $draft->save();
+        }
 
-            if ((int)$draft->customer_id !== (int)$v['customer_id']) {
-                DB::rollBack();
-                return response()->json(['ok' => false, 'message' => 'Unauthorized'], 403);
-            }
-
-            if ($draft->status !== 'draft') {
+        if (!$cartToken) {
+            $cartRow = DB::table('channel_carts')->lockForUpdate()->where('id', $channelCartId)->first();
+            $cartToken = (string)($cartRow->token ?? '');
+            if (!$cartToken) {
                 DB::rollBack();
                 return response()->json([
                     'ok' => false,
-                    'message' => 'Draft already finalized',
+                    'message' => 'ChannelCart token missing',
+                    'errors' => ['cart_id' => $channelCartId],
+                ], 500);
+            }
+        }
+
+        /* -------------------------------------------------------------
+         | 6) Build cart_itemms DIRECT DB (NO price service)
+         |    reservation.cartid = ch_<cart_itemms.id>
+         * -------------------------------------------------------------*/
+        $newCartItemIds = [];
+        $newCartIds = [];
+        $primaryCartId = null;
+
+        foreach ($cartData as $idx => $item) {
+            if (!is_array($item)) continue;
+
+            $siteId = $item['siteid'] ?? $item['site_id'] ?? $item['id'] ?? null;
+            $start  = $item['start_date'] ?? null;
+            $end    = $item['end_date'] ?? null;
+
+            if (!$siteId || !$start || !$end) continue;
+
+            // validate site exists
+            $siteRow = DB::table('sites')->where('siteid', (string)$siteId)->first();
+            if (!$siteRow) {
+                DB::rollBack();
+                return response()->json([
+                    'ok' => false,
+                    'message' => 'Invalid site_id in draft cart_data',
+                    'errors' => ['site_id' => $siteId, 'idx' => $idx],
+                ], 422);
+            }
+
+            // lock cart
+            $cartRow = DB::table('channel_carts')->lockForUpdate()->where('id', $channelCartId)->first();
+            if (!$cartRow) {
+                DB::rollBack();
+                return response()->json(['ok' => false, 'message' => 'Cart not found'], 404);
+            }
+
+            if (!hash_equals((string)$cartRow->token, (string)$cartToken)) {
+                DB::rollBack();
+                return response()->json([
+                    'ok' => false,
+                    'message' => 'INVALID_CART_TOKEN (draft/cart token mismatch)',
+                    'errors' => ['cart_id' => $channelCartId],
+                ], 401);
+            }
+
+            if (now()->greaterThanOrEqualTo($cartRow->expires_at)) {
+                DB::rollBack();
+                return response()->json(['ok' => false, 'message' => 'CART_EXPIRED'], 410);
+            }
+
+            $occupants = $normalizeOccupants($item['occupants'] ?? $item['occupants_json'] ?? null);
+            $addons    = $normalizeAddons($item['add_ons'] ?? $item['addons_json'] ?? []);
+            $siteLockFee = (float)($item['lock_fee_amount'] ?? $item['site_lock_fee'] ?? 0);
+            $base = (float)($item['base'] ?? 0);
+
+            $startDate = Carbon::parse($start)->format('Y-m-d');
+            $endDate   = Carbon::parse($end)->format('Y-m-d');
+
+            // Draft should decide totals; prefer item total/grand_total if present
+            $grand = (float)(
+                $item['grand_total']
+                ?? $item['total']
+                ?? ($base + $siteLockFee)
+            );
+
+            $payload = [
+                'site_id'       => (string)$siteId,
+                'site_lock_fee' => $siteLockFee,
+                'start_date'    => $startDate,
+                'end_date'      => $endDate,
+                'ratetier'      => $item['ratetier'] ?? null,
+                'occupants'     => $occupants,
+                'add_ons'       => $addons,
+            ];
+            $dedupeKey = sha1(json_encode($payload));
+
+            // duplicate check
+            $existing = \App\Model\CartItemm::where('channel_cart_id', $channelCartId)
+                ->where('dedupe_key', $dedupeKey)
+                ->lockForUpdate()
+                ->first();
+
+            if ($existing) {
+                $newCartItemIds[$idx] = (int)$existing->id;
+                $newCartIds[$idx]     = 'ch_' . (int)$existing->id;
+                if (!$primaryCartId) $primaryCartId = $newCartIds[$idx];
+                continue;
+            }
+
+            // overlap check: reservations
+            $overlap = DB::table('reservations')
+                ->whereIn('status', ['confirmed', 'pending'])
+                ->where(function ($q) use ($startDate, $endDate) {
+                    $q->where('cid', '<', $endDate)
+                      ->where('cod', '>', $startDate);
+                })
+                ->exists();
+
+            if ($overlap) {
+                DB::rollBack();
+                return response()->json([
+                    'ok' => false,
+                    'message' => 'OVERLAPPING_RESERVATION',
+                    'errors' => ['site_id' => $siteId, 'start' => $startDate, 'end' => $endDate],
                 ], 409);
             }
 
-            $cartData = is_string($draft->cart_data)
-                ? json_decode($draft->cart_data, true)
-                : (array)$draft->cart_data;
+            // overlap check: holds from other carts
+            $holds = \App\Model\InventoryHoldd::where('site_id', (string)$siteId)
+                ->where('hold_expires_at', '>', now())
+                ->where(function ($q) use ($startDate, $endDate) {
+                    $q->where('start_date', '<', $endDate)
+                      ->where('end_date', '>', $startDate);
+                })
+                ->lockForUpdate()
+                ->get();
 
-            if (empty($cartData)) {
-                DB::rollBack();
-                return response()->json(['ok' => false, 'message' => 'Draft cart empty'], 400);
-            }
-
-            $originalIds = is_string($draft->original_reservation_ids)
-                ? json_decode($draft->original_reservation_ids, true)
-                : (array)$draft->original_reservation_ids;
-
-            $customer = \App\Models\User::findOrFail($draft->customer_id);
-
-            /* -------------------------------------------------------------
-             | 2. Load original reservations
-             * -------------------------------------------------------------*/
-            $originalReservations = \App\Models\Reservation::whereIn('id', $originalIds)->get();
-            if ($originalReservations->isEmpty()) {
-                DB::rollBack();
-                return response()->json(['ok' => false, 'message' => 'Original reservations missing'], 400);
-            }
-
-            /* -------------------------------------------------------------
-             | 3. Compute totals
-             * -------------------------------------------------------------*/
-            $newTotal = (float)$draft->grand_total;
-            $credit   = (float)$draft->credit_amount;
-            $net      = round($newTotal - $credit, 2);
-
-            /* -------------------------------------------------------------
-             | 4. Diff OLD vs NEW
-             * -------------------------------------------------------------*/
-            $oldMap = [];
-            foreach ($originalReservations as $r) {
-                $oldMap[$itemKey([
-                    'siteid' => $r->siteid,
-                    'start_date' => Carbon::parse($r->cid)->toDateString(),
-                    'end_date'   => Carbon::parse($r->cod)->toDateString(),
-                ])] = $r;
-            }
-
-            $newMap = [];
-            foreach ($cartData as $item) {
-                $newMap[$itemKey($item)] = $item;
-            }
-
-            $removed = array_diff_key($oldMap, $newMap);
-            $added   = array_diff_key($newMap, $oldMap);
-            $kept    = array_intersect_key($newMap, $oldMap);
-
-            /* -------------------------------------------------------------
-             | 5. Locate original payment
-             * -------------------------------------------------------------*/
-            $originalPaymentId = $originalReservations->pluck('payment_id')->filter()->first();
-            $originalPayment   = $originalPaymentId
-                ? \App\Models\Payment::find($originalPaymentId)
-                : null;
-
-            $paymentId = null;
-            $refundId  = null;
-
-            /* -------------------------------------------------------------
-             | 6. NET > 0 → CHARGE
-             * -------------------------------------------------------------*/
-            if ($net > 0) {
-                if ($v['payment_method'] === 'card') {
-                    $post = [
-                        'xKey'     => config('services.cardknox.api_key'),
-                        'xVersion' => '4.5.5',
-                        'xCommand' => 'cc:Sale',
-                        'xAmount'  => $net,
-                        'xCardNum' => $v['xCardNum'],
-                        'xExp'     => str_replace('/', '', $v['xExp']),
-                        'xInvoice' => 'MOD-' . uniqid(),
-                    ];
-
-                    $ch = curl_init('https://x1.cardknox.com/gateway');
-                    curl_setopt_array($ch, [
-                        CURLOPT_RETURNTRANSFER => true,
-                        CURLOPT_POSTFIELDS => http_build_query($post),
-                        CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
-                    ]);
-
-                    parse_str(curl_exec($ch), $resp);
-
-                    if (($resp['xStatus'] ?? '') !== 'Approved') {
-                        DB::rollBack();
-                        return response()->json(['ok' => false, 'message' => $resp['xError']], 400);
-                    }
-
-                    $payment = \App\Models\Payment::create([
-                        'cartid'         => $draft->draft_id,
-                        'receipt'        => rand(1000, 9999),
-                        'method'         => $resp['xCardType'] ?? 'Card',
-                        'customernumber' => $customer->id,
-                        'email'          => $customer->email,
-                        'payment'        => $net,
-                        'x_ref_num'      => $resp['xRefNum'] ?? null,
-                    ]);
-
-                    $paymentId = $payment->id;
-                }
-            }
-
-            /* -------------------------------------------------------------
-             | 7. NET < 0 → REFUND
-             * -------------------------------------------------------------*/
-            if ($net < 0) {
-                $refundAmount = abs($net);
-                $origRef = $originalPayment->x_ref_num ?? null;
-
-                if (!$origRef) {
+            foreach ($holds as $h) {
+                if ((int)$h->channel_cart_id !== (int)$channelCartId) {
                     DB::rollBack();
-                    return response()->json(['ok' => false, 'message' => 'Original payment reference missing'], 422);
+                    return response()->json([
+                        'ok' => false,
+                        'message' => 'OVERLAPPING_RESERVATION',
+                        'errors' => ['site_id' => $siteId],
+                    ], 409);
                 }
+            }
 
+            // ✅ price snapshot without services
+            $priceSnapshot = [
+                'sub_total'     => $round2($base),
+                'tax_total'     => 0,
+                'sitelock_fee'  => $round2($siteLockFee),
+                'grand_total'   => $round2($grand),
+                'source'        => 'modification_draft',
+            ];
+
+            // extend cart expiry (same as controller)
+            $timeoutMin = (int) config('business.cart_timeout_minutes', 30);
+            $newExpires = now()->addMinutes($timeoutMin);
+
+            DB::table('channel_carts')->where('id', $channelCartId)->update([
+                'expires_at' => $newExpires,
+                'updated_at' => now(),
+            ]);
+
+            // create cart_itemms
+            $itemId = DB::table('cart_itemms')->insertGetId([
+                'channel_cart_id'       => $channelCartId,
+                'site_id'               => (string)$siteId,
+                'start_date'            => $startDate,
+                'end_date'              => $endDate,
+                'occupants_json'        => json_encode($payload['occupants']),
+                'addons_json'           => json_encode($payload['add_ons']),
+                'price_snapshot_json'   => json_encode($priceSnapshot),
+                'dedupe_key'            => $dedupeKey,
+                'hold_expires_at'       => $newExpires,
+                'status'                => 'active',
+                'created_at'            => now(),
+                'updated_at'            => now(),
+            ]);
+
+            // create inventory hold
+            DB::table('inventory_holdds')->insert([
+                'site_id'         => (string)$siteId,
+                'start_date'      => $startDate,
+                'end_date'        => $endDate,
+                'channel_cart_id' => $channelCartId,
+                'cart_item_id'    => $itemId,
+                'hold_expires_at' => $newExpires,
+                'created_at'      => now(),
+                'updated_at'      => now(),
+            ]);
+
+            $newCartItemIds[$idx] = (int)$itemId;
+            $newCartIds[$idx]     = 'ch_' . (int)$itemId;
+            if (!$primaryCartId) $primaryCartId = $newCartIds[$idx];
+        }
+
+        if (!$primaryCartId) {
+            DB::rollBack();
+            return response()->json([
+                'ok' => false,
+                'message' => 'Unable to build any cart items for this draft',
+                'errors' => ['cart_data' => $cartData],
+            ], 400);
+        }
+
+        /* -------------------------------------------------------------
+         | 7) Refund (ONE gateway refund total, allocate rows)
+         * -------------------------------------------------------------*/
+        $refunds = [];
+        $refundPlan = [];
+        $refundedTotal = 0.0;
+
+        foreach ($originalReservations as $r) {
+            $rid = (int)$r->id;
+            $amt = (float)($refundAmountByReservationId[$rid] ?? 0);
+            if ($amt > 0) {
+                $refundPlan[] = ['reservation' => $r, 'amount' => $amt];
+                $refundedTotal += $amt;
+            }
+        }
+
+        $gatewayRefundXRef = null;
+        $gatewayRefundResp = null;
+        $gatewayRefundStatus = 'manual';
+
+        if ($origIsGateway && $refundedTotal > 0) {
+            $post = [
+                'xKey'             => config('services.cardknox.api_key'),
+                'xVersion'         => '4.5.5',
+                'xCommand'         => 'cc:Refund',
+                'xAmount'          => $round2($refundedTotal),
+                'xRefNum'          => $origGatewayRef,
+                'xInvoice'         => 'REF-' . uniqid() . '-' . now()->format('YmdHis'),
+                'xSoftwareName'    => 'KayutaLake',
+                'xSoftwareVersion' => '1.0',
+            ];
+
+            $ch = curl_init('https://x1.cardknox.com/gateway');
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POSTFIELDS     => http_build_query($post),
+                CURLOPT_HTTPHEADER     => [
+                    'Content-type: application/x-www-form-urlencoded',
+                    'X-Recurring-Api-Version: 1.0',
+                ],
+            ]);
+
+            $raw = curl_exec($ch);
+            if ($raw === false) {
+                DB::rollBack();
+                return response()->json(['ok' => false, 'message' => 'Unable to contact refund gateway.'], 502);
+            }
+
+            parse_str($raw, $resp);
+            $gatewayRefundResp = $resp;
+
+            if (($resp['xStatus'] ?? '') !== 'Approved') {
+                DB::rollBack();
+                return response()->json([
+                    'ok'      => false,
+                    'message' => $resp['xError'] ?? 'Refund failed',
+                    'errors'  => ['gateway' => $resp],
+                ], 400);
+            }
+
+            $gatewayRefundXRef   = $resp['xRefNum'] ?? null;
+            $gatewayRefundStatus = 'approved';
+        }
+
+        foreach ($refundPlan as $i => $row) {
+            $r = $row['reservation'];
+            $rid = (int)$r->id;
+            $refundAmount = (float)$row['amount'];
+            if ($refundAmount <= 0) continue;
+
+            $refundMethod = $origPaymentMethod ?: 'Cash';
+            $refundXRef   = null;
+            $refundStatus = 'manual';
+            $gatewayResp  = null;
+
+            if ($origIsGateway) {
+                $refundMethod = 'Card';
+                $refundStatus = $gatewayRefundStatus;
+                $refundXRef   = ($i === 0) ? $gatewayRefundXRef : null;
+                $gatewayResp  = ($i === 0) ? $gatewayRefundResp : null;
+            }
+
+            $refundPayload = [
+                'cartid'          => $primaryCartId, // ✅ ch_<cart_itemms.id>
+                'reservations_id' => $rid,
+                'amount'          => $refundAmount,
+                'method'          => $refundMethod,
+                'reason'          => 'Reservation Modification',
+                'x_ref_num'       => $refundXRef,
+                'created_by'      => auth()->user()->name ?? 'System',
+            ];
+
+            if ($hasColumn('refunds', 'status')) $refundPayload['status'] = $refundStatus;
+
+            if ($hasColumn('refunds', 'meta')) {
+                $refundPayload['meta'] = json_encode([
+                    'type'                => 'modification_refund',
+                    'draft_id'            => $draft->draft_id,
+                    'original_payment_id' => $originalPaymentId,
+                    'refund_mode'         => $origIsGateway ? 'gateway_one_refund_allocated' : 'manual',
+                    'gateway_refund_xref' => $gatewayRefundXRef,
+                    'gateway_response'    => $gatewayResp,
+                ]);
+            }
+
+            $refundRow = \App\Model\Refund::create($refundPayload);
+
+            $refunds[] = [
+                'refund_id'      => (int)$refundRow->id,
+                'reservation_id' => $rid,
+                'siteid'         => (string)$r->siteid,
+                'amount'         => $round2($refundAmount),
+                'method'         => $refundMethod,
+                'gateway_ref'    => $refundXRef,
+                'status'         => $refundStatus,
+            ];
+        }
+
+        /* -------------------------------------------------------------
+         | 8) Cancel originals
+         * -------------------------------------------------------------*/
+        $cancelledReservations = [];
+        foreach ($originalReservations as $r) {
+            $r->status = 'Cancelled';
+            if ($hasColumn('reservations', 'cancelled_at')) $r->cancelled_at = now();
+            if ($hasColumn('reservations', 'cancel_reason')) $r->cancel_reason = 'Modification';
+            $r->save();
+
+            $cancelledReservations[] = [
+                'reservation_id'  => (int)$r->id,
+                'siteid'          => (string)$r->siteid,
+                'refunded_amount' => $round2((float)($refundAmountByReservationId[$r->id] ?? 0)),
+            ];
+        }
+
+        /* -------------------------------------------------------------
+         | 9) Charge new total
+         * -------------------------------------------------------------*/
+        $newTotal = (float)$draft->grand_total;
+        if ($newTotal < 0) $newTotal = 0;
+
+        $paymentId = null;
+        $paymentMethodLabel = '';
+        $xRefNumNew = null;
+        $xAuthCodeNew = '';
+        $gatewaySaleResp = [];
+
+        if ($newTotal > 0) {
+            if ($v['payment_method'] === 'card') {
                 $post = [
-                    'xKey'     => config('services.cardknox.api_key'),
-                    'xVersion' => '4.5.5',
-                    'xCommand' => 'cc:Refund',
-                    'xAmount'  => $refundAmount,
-                    'xRefNum'  => $origRef,
-                    'xInvoice' => 'REF-' . uniqid(),
+                    'xKey'             => config('services.cardknox.api_key'),
+                    'xVersion'         => '4.5.5',
+                    'xCommand'         => 'cc:Sale',
+                    'xAmount'          => $newTotal,
+                    'xCardNum'         => $v['xCardNum'],
+                    'xExp'             => str_replace('/', '', $v['xExp']),
+                    'xSoftwareVersion' => '1.0',
+                    'xSoftwareName'    => 'KayutaLake',
+                    'xInvoice'         => 'RECUR-' . uniqid() . '-' . now()->format('YmdHis'),
                 ];
 
                 $ch = curl_init('https://x1.cardknox.com/gateway');
                 curl_setopt_array($ch, [
                     CURLOPT_RETURNTRANSFER => true,
-                    CURLOPT_POSTFIELDS => http_build_query($post),
+                    CURLOPT_POSTFIELDS     => http_build_query($post),
+                    CURLOPT_HTTPHEADER     => [
+                        'Content-type: application/x-www-form-urlencoded',
+                        'X-Recurring-Api-Version: 1.0',
+                    ],
                 ]);
 
-                parse_str(curl_exec($ch), $resp);
-
-                if (($resp['xStatus'] ?? '') !== 'Approved') {
+                $raw = curl_exec($ch);
+                if ($raw === false) {
                     DB::rollBack();
-                    return response()->json(['ok' => false, 'message' => $resp['xError']], 400);
+                    return response()->json(['ok' => false, 'message' => 'Unable to contact payment gateway.'], 502);
                 }
 
-                $refund = \App\Models\Refund::create([
-                    'cartid'          => $draft->draft_id,
-                    'reservations_id' => $originalReservations->first()->id ?? 0,
-                    'amount'          => $refundAmount,
-                    'method'          => 'Card',
-                    'reason'          => 'Reservation Modification',
-                    'x_ref_num'       => $resp['xRefNum'],
-                    'created_by'      => auth()->user()->name ?? 'System',
+                parse_str($raw, $sale);
+                $gatewaySaleResp = $sale;
+
+                if (($sale['xStatus'] ?? '') !== 'Approved') {
+                    DB::rollBack();
+                    return response()->json([
+                        'ok' => false,
+                        'message' => $sale['xError'] ?? 'Payment failed',
+                        'errors' => ['gateway' => $sale],
+                    ], 400);
+                }
+
+                $paymentMethodLabel = $sale['xCardType'] ?? 'Card';
+                $xRefNumNew = $sale['xRefNum'] ?? null;
+                $xAuthCodeNew = $sale['xAuthCode'] ?? ('MOD-' . uniqid());
+
+            } elseif ($v['payment_method'] === 'cash') {
+                $cashTendered = (float)$v['cash_tendered'];
+                if ($cashTendered < $newTotal) {
+                    DB::rollBack();
+                    return response()->json([
+                        'ok' => false,
+                        'message' => 'Cash tendered must be at least the new total amount.',
+                        'errors' => ['cash_tendered' => ['Not enough cash tendered']],
+                    ], 422);
+                }
+
+                $paymentMethodLabel = 'Cash';
+                $xAuthCodeNew = 'CASH-' . now()->format('YmdHis') . '-' . uniqid();
+            } else {
+                $paymentMethodLabel = ucfirst(str_replace('_', ' ', $v['payment_method']));
+                $xAuthCodeNew = strtoupper($v['payment_method']) . '-' . strtoupper(uniqid());
+            }
+
+            $paymentPayload = [
+                'customernumber' => $customer->id,
+                'method'         => $paymentMethodLabel ?: ucfirst($v['payment_method']),
+                'cartid'         => $primaryCartId,
+                'email'          => $customer->email,
+                'payment'        => $newTotal,
+                'receipt'        => rand(1000, 9999),
+                'x_ref_num'      => $xRefNumNew,
+            ];
+
+            if ($hasColumn('payments', 'meta')) {
+                $paymentPayload['meta'] = json_encode([
+                    'type'            => 'modification',
+                    'draft_id'        => $draft->draft_id,
+                    'channel_cart_id' => $channelCartId,
+                    'refunded_total'  => $round2($refundedTotal),
+                    'sale_gateway'    => $gatewaySaleResp,
+                    'refund_gateway'  => $gatewayRefundResp,
+                    'refund_xref'     => $gatewayRefundXRef,
+                    'primary_cartid'  => $primaryCartId,
                 ]);
-
-                $refundId = $refund->id;
             }
 
-            /* -------------------------------------------------------------
-             | 8. Apply reservation changes
-             * -------------------------------------------------------------*/
-            foreach ($removed as $r) {
-                $r->update([
-                    'status' => 'Cancelled',
-                ]);
-            }
-
-            foreach ($kept as $key => $item) {
-                $r = $oldMap[$key];
-                $r->cid = Carbon::parse($item['start_date'])->setTime(15,0);
-                $r->cod = Carbon::parse($item['end_date'])->setTime(11,0);
-                $r->save();
-            }
-
-            $newReservationIds = [];
-            foreach ($added as $item) {
-                $res = \App\Models\Reservation::create([
-                    'cartid' => $draft->draft_id,
-                    'source' => 'Modification',
-                    'email' => $customer->email,
-                    'fname' => $customer->f_name ?? '',
-                    'lname' => $customer->l_name ?? '',
-                    'customernumber' => $customer->id,
-                    'siteid' => $item['id'],
-                    'cid' => Carbon::parse($item['start_date'])->setTime(15,0),
-                    'cod' => Carbon::parse($item['end_date'])->setTime(11,0),
-                    'total' => $item['base'] + ($item['lock_fee_amount'] ?? 0),
-                    'subtotal' => $item['base'],
-                    'totaltax' => 0, // Assuming tax already handled or not needed for mod
-                    'siteclass' => $item['siteclass'] ?? '',
-                    'nights' => Carbon::parse($item['end_date'])->diffInDays(Carbon::parse($item['start_date'])),
-                    'base' => $item['base'],
-                    'sitelock' => (float) ($item['lock_fee_amount'] ?? 0),
-                    'rigtype' => $item['hookup'] ?? '',
-                    'riglength' => $item['rig_length'] ?? 0,
-                    'xconfnum' => 'MOD-' . rand(1000, 9999),
-                    'createdby' => auth()->user()->name ?? 'system',
-                    'receipt' => rand(1000, 9999),
-                    'rid' => 'uc',
-                ]);
-                $newReservationIds[] = $res->id;
-            }
-
-            /* -------------------------------------------------------------
-             | 9. Finalize draft
-             * -------------------------------------------------------------*/
-            $draft->update([
-                'status' => 'confirmed',
-            ]);
-
-            DB::commit();
-
-            return response()->json([
-                'ok' => true,
-                'draft_id' => $draft->draft_id,
-                'new_total' => $newTotal,
-                'credit' => $credit,
-                'net' => $net,
-                'payment_id' => $paymentId,
-                'refund_id' => $refundId,
-                'removed_reservations' => array_values(array_map(fn($r) => $r->id, $removed)),
-                'new_reservation_ids' => $newReservationIds,
-            ]);
-
-        } catch (\Throwable $e) {
-            DB::rollBack();
-            return response()->json([
-                'ok' => false,
-                'message' => 'Modification checkout failed',
-                'error' => $e->getMessage(),
-                'line' => $e->getLine(),
-            ], 500);
+            $paymentRow = \App\Model\Payment::create($paymentPayload);
+            $paymentId = $paymentRow->id ?? null;
         }
+
+        /* -------------------------------------------------------------
+         | 10) Create NEW reservations (cartid = ch_<cart_itemms.id>)
+         * -------------------------------------------------------------*/
+        $groupConfirmationCode = 'CONF-' . strtoupper(substr(md5(uniqid('', true)), 0, 10));
+        $newReservations = [];
+
+        foreach ($cartData as $idx => $item) {
+            if (!is_array($item)) continue;
+
+            $siteid = $item['siteid'] ?? $item['site_id'] ?? $item['id'] ?? null;
+            if (!$siteid) continue;
+
+            $site     = \App\Model\Site::where('siteid', $siteid)->first();
+            $rateTier = $site ? \App\Model\RateTier::where('tier', $site->hookup)->first() : null;
+
+            $inDate  = !empty($item['start_date']) ? Carbon::parse($item['start_date'])->format('Y-m-d') : null;
+            $outDate = !empty($item['end_date'])   ? Carbon::parse($item['end_date'])->format('Y-m-d')   : null;
+
+            $inTime = ($rateTier && !empty($rateTier->check_in))
+                ? Carbon::parse($rateTier->check_in)->format('H:i:s')
+                : '15:00:00';
+
+            $outTime = ($rateTier && !empty($rateTier->check_out))
+                ? Carbon::parse($rateTier->check_out)->format('H:i:s')
+                : '11:00:00';
+
+            $scheduledCid = $inDate  ? "{$inDate} {$inTime}"   : null;
+            $scheduledCod = $outDate ? "{$outDate} {$outTime}" : null;
+
+            $cartidForThisReservation = $newCartIds[$idx] ?? null;
+            if (!$cartidForThisReservation) {
+                DB::rollBack();
+                return response()->json([
+                    'ok' => false,
+                    'message' => 'Missing cartid for reservation (cart_itemms not created)',
+                    'errors' => ['idx' => $idx],
+                ], 500);
+            }
+
+            $base     = (float)($item['base'] ?? 0);
+            $sitelock = (float)($item['lock_fee_amount'] ?? 0);
+
+            $totalCharges = (float)(
+                $item['grand_total']
+                ?? $item['total']
+                ?? ($base + $sitelock)
+            );
+
+            $reservationData = [
+                'xconfnum'       => $xAuthCodeNew ?: ('MOD-' . uniqid()),
+                'cartid'         => $cartidForThisReservation, // ✅ ch_<cart_itemms.id>
+                'source'         => 'Online Booking',
+                'createdby'      => 'API',
+                'fname'          => $customer->f_name ?? '',
+                'lname'          => $customer->l_name ?? '',
+                'customernumber' => $customer->id,
+                'siteid'         => $siteid,
+                'cid'            => $scheduledCid,
+                'cod'            => $scheduledCod,
+                'siteclass'      => $item['siteclass'] ?? ($site->siteclass ?? null),
+                'subtotal'       => (float)($item['subtotal'] ?? $base),
+                'totaltax'       => 0,
+                'nights'         => ($inDate && $outDate) ? Carbon::parse($outDate)->diffInDays(Carbon::parse($inDate)) : 1,
+                'sitelock'       => $sitelock,
+                'receipt'        => rand(1000, 9999),
+                'totalcharges'   => $totalCharges,
+                'total'          => $totalCharges,
+            ];
+
+            $addonsPayload = $normalizeAddons($item['add_ons'] ?? $item['addons_json'] ?? []);
+            if (!empty($addonsPayload) && $hasColumn('reservations', 'addons_json')) {
+                $reservationData['addons_json'] = $addonsPayload;
+            }
+
+            if ($paymentId && $hasColumn('reservations', 'payment_id')) {
+                $reservationData['payment_id'] = $paymentId;
+            }
+
+            if ($hasColumn('reservations', 'group_confirmation_code')) {
+                $reservationData['group_confirmation_code'] = $groupConfirmationCode;
+            }
+
+            $reservation = \App\Model\Reservation::create($reservationData);
+
+            if ($hasColumn('reservations', 'confirmation_code') && empty($reservation->confirmation_code)) {
+                $tries = 0;
+                do {
+                    $tries++;
+                    $code = $generateConfirmationCode();
+                    $exists = \App\Model\Reservation::where('confirmation_code', $code)->exists();
+                } while ($exists && $tries < 5);
+
+                $reservation->confirmation_code = $code;
+                $reservation->save();
+            }
+
+            $newReservations[] = [
+                'reservation_id'    => (int)$reservation->id,
+                'siteid'            => (string)$siteid,
+                'cid'               => (string)$reservation->cid,
+                'cod'               => (string)$reservation->cod,
+                'confirmation_code' => $reservation->confirmation_code ?? null,
+                'payment_id'        => $paymentId,
+                'cartid'            => $cartidForThisReservation,
+                'cart_itemm_id'     => (int)($newCartItemIds[$idx] ?? 0),
+            ];
+        }
+
+        /* -------------------------------------------------------------
+         | 11) Finalize draft
+         * -------------------------------------------------------------*/
+        $draft->status = 'confirmed';
+        if ($hasColumn('reservation_drafts', 'payment_id')) $draft->payment_id = $paymentId;
+        $draft->save();
+
+        DB::commit();
+
+        return response()->json([
+            'ok' => true,
+            'draft_id' => $draft->draft_id,
+            'channel_cart_id' => $channelCartId,
+            'primary_cartid' => $primaryCartId,
+
+            'refunds' => $refunds,
+            'refund_summary' => [
+                'count' => count($refunds),
+                'total' => $round2($refundedTotal),
+            ],
+
+            'payment' => [
+                'payment_id'  => $paymentId,
+                'method'      => $paymentMethodLabel ?: ucfirst($v['payment_method']),
+                'amount'      => $round2($newTotal),
+                'gateway_ref' => $xRefNumNew,
+                'cartid'      => $primaryCartId,
+            ],
+
+            'new_reservations' => $newReservations,
+            'cancelled_reservations' => $cancelledReservations,
+        ], 200);
+
+    } catch (\Throwable $e) {
+        DB::rollBack();
+
+        return response()->json([
+            'ok' => false,
+            'message' => 'Modification checkout failed',
+            'error' => $e->getMessage(),
+            'file' => $e->getFile(),
+            'line' => $e->getLine(),
+        ], 500);
     }
+}
+
 
     private function normalizeAddons($addons)
     {

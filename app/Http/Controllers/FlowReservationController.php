@@ -17,10 +17,13 @@ use App\Models\Reservation; // Added
 use App\Models\Payment; // Added
 use App\Models\Refund; // Added
 use App\Models\GiftCard; // Added
+use App\Models\Receipt; // Added
+use App\Models\CardsOnFile; // Added
 use App\Services\ReservationLogService; // Added
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB; // Added
+use Illuminate\Support\Facades\Schema; // Added
 use Illuminate\Support\Str;
 use App\Models\Infos;
 use Carbon\Carbon;
@@ -729,19 +732,13 @@ class FlowReservationController extends Controller
         $originalResIds = json_decode($draft->original_reservation_ids ?? '[]', true);
         $oldReservations = Reservation::whereIn('id', $originalResIds)->with('site')->get();
 
-        $oldReservationsArray = $oldReservations->map(function($res) {
-            return [
-                'id' => $res->id,
-                'siteid' => $res->siteid,
-                'base' => (float)$res->base,
-                'subtotal' => (float)$res->subtotal,
-                'sitelock_fee' => (float)($res->sitelock ?? 0),
-                'total' => (float)$res->total,
-                'expected_full_refund' => (float)$res->total
-            ];
-        })->toArray();
+        if ($oldReservations->isEmpty()) {
+            return response()->json(['success' => false, 'message' => 'Original reservations not found.'], 404);
+        }
 
-        $totalToCredit = $oldReservations->sum('total');
+        $totalPaidOld = $oldReservations->sum('total');
+        $grandTotalNew = (float)($draft->grand_total ?? 0);
+        $delta = round($grandTotalNew - $totalPaidOld, 2);
 
         if (!$draft->customer_id) {
             return response()->json(['success' => false, 'message' => 'Customer must be bound before finalization.'], 422);
@@ -749,259 +746,237 @@ class FlowReservationController extends Controller
 
         $customer = User::findOrFail($draft->customer_id);
 
+        DB::beginTransaction();
         try {
-            // Step 1: Map payment method from POS drawer format to API format
+            // 1. Determine Payment Method
             $paymentMethod = $request->payment_method ?? 'Cash';
             $apiPaymentMethod = 'cash'; // default
-            $paymentData = [];
+            
+            if (in_array($paymentMethod, ['CreditCard', 'Visa', 'MasterCard', 'Amex', 'Discover', 'Manual'])) {
+                $apiPaymentMethod = 'card';
+            } elseif ($paymentMethod === 'Check') {
+                $apiPaymentMethod = 'ach';
+            } elseif (in_array($paymentMethod, ['GiftCard', 'Gift Card'])) {
+                $apiPaymentMethod = 'gift_card';
+            }
 
-            switch ($paymentMethod) {
-                case 'CreditCard':
-                case 'Visa':
-                case 'MasterCard':
-                case 'Amex':
-                case 'Discover':
-                case 'Manual':
-                    if ($request->x_ref_num) {
-                        $apiPaymentMethod = 'cash';
-                        $paymentData = [
-                            'cash_tendered' => $request->amount ?? $draft->grand_total,
-                            'external_ref' => $request->x_ref_num
-                        ];
-                    } else {
-                        $apiPaymentMethod = 'card';
-                        $paymentData = [
-                            'xCardNum' => $request->xCardNum ?? '',
-                            'xExp' => $request->xExp ?? '',
-                            'cvv' => $request->cvv ?? '',
+            $gatewayResponse = null;
+            $xRefNum = null;
+            $paymentMethodLabel = $paymentMethod;
+            $xAuthCode = 'MOD-' . strtoupper(Str::random(10));
+
+            // 2. Handle Gateway Transaction (Sale or Refund)
+            if ($apiPaymentMethod === 'card' && $delta != 0) {
+                $apiKey = config('services.cardknox.api_key');
+                
+                if ($delta > 0) {
+                    // SALE for the delta
+                    $postData = [
+                        'xKey'             => $apiKey,
+                        'xVersion'         => '4.5.5',
+                        'xCommand'         => 'cc:Sale',
+                        'xAmount'          => number_format($delta, 2, '.', ''),
+                        'xCardNum'         => $request->xCardNum,
+                        'xExp'             => str_replace(['/', ' '], '', $request->xExp),
+                        'xSoftwareVersion' => '1.0',
+                        'xSoftwareName'    => 'KayutaLake',
+                        'xInvoice'         => 'MOD-SALE-' . $draft->draft_id,
+                    ];
+                } else {
+                    // REFUND for the delta
+                    // Try to find an original gateway reference to refund against
+                    $originalPayment = Payment::whereIn('cartid', $oldReservations->pluck('cartid'))
+                        ->whereNotNull('x_ref_num')
+                        ->orderBy('id', 'desc')
+                        ->first();
+                    
+                    if ($originalPayment) {
+                        $postData = [
+                            'xKey'             => $apiKey,
+                            'xVersion'         => '4.5.5',
+                            'xCommand'         => 'cc:Refund',
+                            'xAmount'          => number_format(abs($delta), 2, '.', ''),
+                            'xRefNum'          => $originalPayment->x_ref_num,
+                            'xSoftwareVersion' => '1.0',
+                            'xSoftwareName'    => 'KayutaLake',
+                            'xInvoice'         => 'MOD-REF-' . $draft->draft_id,
                         ];
                     }
-                    break;
-                case 'Check':
-                    $apiPaymentMethod = 'ach';
-                    $paymentData = [
-                        'ach' => [
-                            'routing' => $request->xRouting ?? '',
-                            'account' => $request->xAccount ?? '',
-                            'name' => $request->xName ?? ($customer->f_name . ' ' . $customer->l_name),
-                        ]
-                    ];
-                    break;
-                case 'GiftCard':
-                case 'Gift Card':
-                    $apiPaymentMethod = 'gift_card';
-                    $paymentData = [
-                        'gift_card_code' => $request->xBarcode ?? $request->gift_card_code ?? '',
-                    ];
-                    break;
-                case 'Cash':
-                default:
-                    $apiPaymentMethod = 'cash';
-                    $paymentData = [
-                        'cash_tendered' => $request->amount ?? $draft->grand_total,
-                    ];
-                    break;
+                }
+
+                if (isset($postData)) {
+                    $ch = curl_init('https://x1.cardknox.com/gateway');
+                    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                    curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($postData));
+                    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                        'Content-type: application/x-www-form-urlencoded',
+                        'X-Recurring-Api-Version: 1.0',
+                    ]);
+                    $response = curl_exec($ch);
+                    if ($response === false) {
+                        throw new \Exception("Payment gateway connection failed: " . curl_error($ch));
+                    }
+                    parse_str($response, $gatewayResponse);
+
+                    if (($gatewayResponse['xStatus'] ?? '') !== 'Approved') {
+                        throw new \Exception("Gateway Error: " . ($gatewayResponse['xError'] ?? 'Transaction failed'));
+                    }
+                    $xRefNum = $gatewayResponse['xRefNum'] ?? null;
+                    $xAuthCode = $gatewayResponse['xAuthCode'] ?? $xAuthCode;
+                    $paymentMethodLabel = $gatewayResponse['xCardType'] ?? $paymentMethod;
+                }
+            } elseif ($apiPaymentMethod === 'cash' && $delta > 0) {
+                // Cash tendered check
+                $cashTendered = (float)($request->cash_tendered ?? $request->amount ?? 0);
+                if ($cashTendered < $delta) {
+                    throw new \Exception("Insufficient cash tendered. Need $" . number_format($delta, 2));
+                }
+            } elseif ($apiPaymentMethod === 'gift_card' && $delta > 0) {
+                $giftCardCode = $request->xBarcode ?? $request->gift_card_code;
+                $giftCard = GiftCard::where('barcode', $giftCardCode)->first();
+                if (!$giftCard || $giftCard->amount < $delta) {
+                    throw new \Exception("Invalid gift card or insufficient balance.");
+                }
+                $giftCard->decrement('amount', $delta);
             }
 
-            // Step 2: Prepare checkout modification data
-            $modificationData = array_merge([
-                'draft_id' => $draft->draft_id,
-                'customer_id' => $customer->id,
-                'payment_method' => $apiPaymentMethod,
-                'xAmount' => $request->amount ?? $draft->grand_total,
-                'fname' => $customer->f_name,
-                'lname' => $customer->l_name,
-                'email' => $customer->email,
-                'phone' => $customer->phone ?? '',
-                'street_address' => $customer->street_address ?? '',
-                'city' => $customer->city ?? '',
-                'state' => $customer->state ?? '',
-                'zip' => $customer->zip ?? '',
+            // 3. Create Receipt
+            $receipt = Receipt::create(['cartid' => $draft->draft_id]);
+
+            // 4. Record Payment or Refund
+            if ($delta > 0) {
+                Payment::create([
+                    'cartid' => $draft->draft_id,
+                    'method' => $paymentMethodLabel,
+                    'customernumber' => $customer->id,
+                    'email' => $customer->email,
+                    'payment' => $delta,
+                    'transaction_type' => 'Modification Sale',
+                    'x_ref_num' => $xRefNum,
+                    'receipt' => $receipt->id
+                ]);
+            } elseif ($delta < 0) {
+                Refund::create([
+                    'cartid' => $draft->draft_id,
+                    'amount' => abs($delta),
+                    'method' => $paymentMethodLabel,
+                    'reason' => 'Reservation Modification',
+                    'x_ref_num' => $xRefNum,
+                    'created_by' => auth()->id() ?? 0,
+                    'reservations_id' => $oldReservations->first()->id ?? null
+                ]);
+            }
+
+            // 5. Build New Reservations (Atomic Swap)
+            $cartData = is_array($draft->cart_data) ? $draft->cart_data : json_decode($draft->cart_data, true);
+            $newReservationIds = [];
+            $groupConfirmationCode = $oldReservations->first()->group_confirmation_code ?? ('MOD-' . strtoupper(Str::random(10)));
+
+            foreach ($cartData as $item) {
+                $siteId = $item['id'] ?? $item['siteid'];
+                $start = $item['start_date'] ?? $item['cid'];
+                $end = $item['end_date'] ?? $item['cod'];
                 
-                'draft' => $draft->toArray(),
-                'old_reservations_breakdown' => $oldReservationsArray,
-                'total_to_credit' => $totalToCredit,
-            ], $paymentData);
+                // Scheduled check-in/out times
+                $site = Site::where('siteid', $siteId)->first();
+                $rateTier = $site ? RateTier::where('tier', $site->hookup)->first() : null;
+                
+                $inTime = ($rateTier && !empty($rateTier->check_in)) ? Carbon::parse($rateTier->check_in)->format('H:i:s') : '15:00:00';
+                $outTime = ($rateTier && !empty($rateTier->check_out)) ? Carbon::parse($rateTier->check_out)->format('H:i:s') : '11:00:00';
+                
+                $scheduledCid = Carbon::parse($start)->format('Y-m-d') . ' ' . $inTime;
+                $scheduledCod = Carbon::parse($end)->format('Y-m-d') . ' ' . $outTime;
 
-            // Step 3: Call external Checkout Modification API
-            $response = Http::withHeaders([
-                'Accept' => 'application/json',
-                'Authorization' => 'Bearer ' . env('BOOKING_BEARER_KEY'),
-            ])->post(env('BOOK_API_URL') . 'v1/checkout/modification', $modificationData);
+                // Availability check (ignore originals)
+                $overlap = Reservation::where('siteid', $siteId)
+                    ->whereIn('status', ['confirmed', 'checkedin'])
+                    ->whereNotIn('id', $originalResIds)
+                    ->where(function ($q) use ($start, $end) {
+                        $q->where('cid', '<', $end)
+                          ->where('cod', '>', $start);
+                    })->exists();
 
-            if ($response->failed()) {
-                Log::error('Checkout Modification API failed', [
-                    'status' => $response->status(),
-                    'body' => $response->body(),
-                    'draft_id' => $draft_id,
+                if ($overlap) {
+                    throw new \Exception("Site {$siteId} is no longer available for the selected dates.");
+                }
+
+                $newRes = Reservation::create([
+                    'xconfnum' => $xAuthCode,
+                    'cartid' => $draft->draft_id,
+                    'siteid' => $siteId,
+                    'customernumber' => $customer->id,
+                    'fname' => $customer->f_name,
+                    'lname' => $customer->l_name,
+                    'email' => $customer->email,
+                    'cid' => $scheduledCid,
+                    'cod' => $scheduledCod,
+                    'siteclass' => $site->siteclass ?? $item['siteclass'] ?? null,
+                    'total' => $item['grand_total'] ?? $item['total'] ?? 0,
+                    'totalcharges' => $item['grand_total'] ?? $item['total'] ?? 0,
+                    'subtotal' => $item['base'] ?? 0,
+                    'sitelock' => $item['fee'] ?? $item['site_lock_fee'] ?? 0,
+                    'nights' => Carbon::parse($start)->diffInDays(Carbon::parse($end)),
+                    'status' => 'confirmed',
+                    'createdby' => 'Admin Modification',
+                    'group_confirmation_code' => $groupConfirmationCode,
+                    'receipt' => $receipt->id
                 ]);
 
-                $errorMessage = $response->json()['message'] ?? 'Modification processing failed.';
-                if (str_contains(strtolower($errorMessage), 'email')) {
-                    $errorMessage = 'Modification processing failed.';
-                }
+                // Confirmation code
+                $tries = 0;
+                do {
+                    $tries++;
+                    $code = 'CONF-' . strtoupper(substr(md5(uniqid('', true)), 0, 10));
+                    $exists = Reservation::where('confirmation_code', $code)->exists();
+                } while ($exists && $tries < 5);
+                $newRes->confirmation_code = $code;
+                $newRes->save();
 
-                return response()->json([
-                    'success' => false,
-                    'message' => $errorMessage,
-                    'errors' => $response->json()['errors'] ?? [],
-                ], $response->status());
+                $newReservationIds[] = $newRes->id;
             }
 
-            // Handle gift card deduction if applicable
-            if ($apiPaymentMethod === 'gift_card') {
-                $giftCardCode = $paymentData['gift_card_code'] ?? null;
-                if ($giftCardCode) {
-                    GiftCard::where('barcode', $giftCardCode)->decrement('amount', $request->amount ?? $draft->grand_total);
-                }
+            // 6. Cancel Old Reservations
+            Reservation::whereIn('id', $originalResIds)->update([
+                'status' => 'Cancelled',
+                'reason' => 'Modified. Successor: ' . $draft->draft_id
+            ]);
+
+            // 7. Cards On File
+            if ($apiPaymentMethod === 'card' && $gatewayResponse && isset($gatewayResponse['xToken'])) {
+                CardsOnFile::create([
+                    'customernumber' => $customer->id,
+                    'method' => $paymentMethodLabel,
+                    'cartid' => $draft->draft_id,
+                    'email' => $customer->email,
+                    'xmaskedcardnumber' => $gatewayResponse['xMaskedCardNumber'] ?? '',
+                    'xtoken' => $gatewayResponse['xToken'],
+                    'receipt' => $receipt->id,
+                    'gateway_response' => json_encode($gatewayResponse)
+                ]);
             }
 
-            // Mark draft as confirmed/completed
             $draft->status = 'confirmed';
             $draft->save();
- 
-            $apiResponse = $response->json();
-            $redirectId = $apiResponse['cartid'] ?? $draft->original_cart_id ?? $draft_id;
- 
-            // Redirect to the reservation detail page for the group
-            return redirect()->route('admin.reservations.show', ['id' => $redirectId])
-                ->with('success', 'Reservation modified successfully.');
-        } catch (\Exception $e) {
-            Log::error("Finalize Modification Error: " . $e->getMessage(), [
-                'draft_id' => $draft_id,
-                'trace' => $e->getTraceAsString(),
-            ]);
-            
-            return response()->json([
-                'success' => false,
-                'message' => 'Error connecting to booking service: ' . $e->getMessage()
-            ], 500);
-        }
 
-        // $summary = $this->getModificationSummary($draft);
-        // $totalPriceAdded = $summary['financial_summary']['total_new_charges'];
-        // $totalPriceCancelled = $summary['financial_summary']['total_refunds'];
+            DB::commit();
 
-        // // Proceed with finalization logic using the summary calculated above
-        // if (!$draft->customer_id) {
-        //     return response()->json(['success' => false, 'message' => 'Customer must be bound before finalization.'], 422);
-        // }
-
-        // $customer = User::findOrFail($draft->customer_id);
-        // $creditAmount = (float) ($draft->credit_amount ?? 0);
-        // $netTotal = (float) max(0, $draft->grand_total - $creditAmount);
-
-        // DB::beginTransaction();
-        // try {
-        //     // 1. Process "Payment" using credit if possible
-        //     // If Net Total > 0, we need real payment. Otherwise, it's just credit shifting.
-            
-        //     $paymentMethod = $request->payment_method ?? 'Account Credit';
-        //     $xRefNum = $request->x_ref_num ?? null;
-
-        //     if ($netTotal > 0 && !$xRefNum && !in_array($paymentMethod, ['Cash', 'Check', 'Account Credit'])) {
-        //          // If there's a net due and no external ref/manual method, we might need to call Cardknox here
-        //          // But typically the frontend handles terminal/swipe and passes x_ref_num
-        //     }
-
-        //     // 2. Logic for pushing to Booking API (Reuse finalize logic but adjust totals)
-        //     // Note: Since we want to re-use Step 1/2 logic, we actually need to CALL the external checkout
-        //     // with the FULL amount or 0? 
-        //     // In rvparkhq systems, usually we push the full reservation and mark it as paid.
-            
-        //     // For simplicity in this implementation, we will perform the finalize() logic but inject modification steps.
-        //     // We use the same finalize() structure but ensure the original reservation is handled.
-            
-        //     // [REDACTED: Mapping to API omitted for brevity, logic follows finalize() pattern]
-        //     // Actually, let's proceed with local saving if API is handled elsewhere OR replicate finalize logic here.
-            
-        //     // To be safe and reuse the user's request of finalizeModification(), 
-        //     // we will simulate the "Checkout" but locally manage the Cancellation and Credit.
-
-        //     // 3. Cancel Original Reservation(s)
-        //     $originalResIds = json_decode($draft->original_reservation_ids, true);
-        //     if (is_array($originalResIds) && !empty($originalResIds)) {
-        //         $oldReservations = Reservation::whereIn('id', $originalResIds)->get();
-        //         foreach($oldReservations as $oldRes) {
-        //             $oldRes->update([
-        //                 'status' => 'Cancelled',
-        //                 'reason' => 'Modified by Admin. New Cart ID: ' . $draft->draft_id
-        //             ]);
-        //         }
-        //     }
-
-        //     // 4. Record the "Payments" and "Refunds" based on site changes
-            
-        //     // Record the New Charges (e.g. Added sites or price increases)
-        //     if ($totalPriceAdded > 0) {
-        //         Payment::create([
-        //             'cartid' => $draft->draft_id,
-        //             'method' => $paymentMethod,
-        //             'customernumber' => $customer->id,
-        //             'email' => $customer->email,
-        //             'payment' => $totalPriceAdded,
-        //             'transaction_type' => 'Sale',
-        //             'x_ref_num' => $xRefNum,
-        //             'receipt' => 'PAY-' . Str::random(8)
-        //         ]);
-        //     }
-
-        //     // Record Refund for explicitly cancelled items
-        //     if ($totalPriceCancelled > 0) {
-        //         Refund::create([
-        //             'cartid' => $draft->draft_id,
-        //             'amount' => $totalPriceCancelled,
-        //             'reason' => 'Reservation Modification - Cancelled Items',
-        //             'method' => 'Account Credit',
-        //             'override_reason' => 'Automatic refund for cancelled site during modification',
-        //             'created_by' => auth()->id()
-        //         ]);
-        //     }
-
-        //     // Record the carry-over credit for unchanged items (Internal shift)
-        //     $unchangedCredit = $creditAmount - $totalPriceCancelled;
-        //     if ($unchangedCredit > 0) {
-        //         Payment::create([
-        //             'cartid' => $draft->draft_id,
-        //             'method' => 'Account Credit',
-        //             'customernumber' => $customer->id,
-        //             'email' => $customer->email,
-        //             'payment' => $unchangedCredit,
-        //             'transaction_type' => 'Modification Credit',
-        //             'receipt' => 'MOD-' . Str::random(8)
-        //         ]);
-        //     }
-
-        //     // 6. Push to external API (Simulated or actual call like finalize)
-        //     // Reusing the structure from finalize() but sending 0 if fully paid by credit
-        //     // For this specific task, the user wanted finalizeModification() to be the entry.
-            
-        //     // [LOGIC: Push to cart and checkout in API]
-        //     // I'll call a private method to handle the shared API logic if both finalize and finalizeModification use it.
-        //     // For now, I'll return success to indicate local state is correct.
-
-        //     DB::commit();
-
-        //     // 7. Send Emails
-        //     try {
-        //         Mail::to($customer->email)->send(new \App\Mail\ReservationModified($draft));
-        //     } catch (\Exception $e) {
-        //         Log::error("Failed to send modification email: " . $e->getMessage());
-        //     }
-
-        //     $draft->update(['status' => 'confirmed']);
+            $redirectId = $newReservationIds[0] ?? $draft->draft_id;
 
             return response()->json([
                 'success' => true,
                 'message' => 'Reservation modified successfully.',
-                'order_id' => $draft->draft_id
+                'order_id' => $redirectId,
+                'redirect_url' => route('admin.reservations.show', ['id' => $redirectId])
             ]);
 
-        // } catch (\Exception $e) {
-        //     DB::rollBack();
-        //     Log::error("Modification Finalize Failed: " . $e->getMessage());
-        //     return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
-        // }
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Modification Finalize Failed: " . $e->getMessage(), [
+                'draft_id' => $draft_id,
+                'trace' => $e->getTraceAsString()
+            ]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        }
     }
 
     public function viewSiteDetails(Request $request)
