@@ -769,6 +769,7 @@ class FlowReservationController extends Controller
             if ($apiPaymentMethod === 'card' && $delta != 0) {
                 $apiKey = config('services.cardknox.api_key');
                 
+
                 if ($delta > 0) {
                     // SALE for the delta
                     $postData = [
@@ -825,11 +826,12 @@ class FlowReservationController extends Controller
                     $xAuthCode = $gatewayResponse['xAuthCode'] ?? $xAuthCode;
                     $paymentMethodLabel = $gatewayResponse['xCardType'] ?? $paymentMethod;
                 }
+
             } elseif ($apiPaymentMethod === 'cash' && $delta > 0) {
                 // Cash tendered check
-                $cashTendered = (float)($request->cash_tendered ?? $request->amount ?? 0);
+                $cashTendered = (float)($request->cash_tendered ?? $request->amount ?? $request->xAmount ?? 0);
                 if ($cashTendered < $delta) {
-                    throw new \Exception("Insufficient cash tendered. Need $" . number_format($delta, 2));
+                    throw new \Exception("Insufficient cash tendered. Need $" . number_format($delta, 2) . " (Got $" . number_format($cashTendered, 2) . ")");
                 }
             } elseif ($apiPaymentMethod === 'gift_card' && $delta > 0) {
                 $giftCardCode = $request->xBarcode ?? $request->gift_card_code;
@@ -936,9 +938,10 @@ class FlowReservationController extends Controller
             }
 
             // 6. Cancel Old Reservations
+            $newResIdsStr = implode(', ', $newReservationIds);
             Reservation::whereIn('id', $originalResIds)->update([
                 'status' => 'Cancelled',
-                'reason' => 'Modified. Successor: ' . $draft->draft_id
+                'reason' => "Modified. Successors: {$newResIdsStr} (Draft: {$draft->draft_id})"
             ]);
 
             // 7. Cards On File
@@ -962,12 +965,17 @@ class FlowReservationController extends Controller
 
             $redirectId = $newReservationIds[0] ?? $draft->draft_id;
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Reservation modified successfully.',
-                'order_id' => $redirectId,
-                'redirect_url' => route('admin.reservations.show', ['id' => $redirectId])
-            ]);
+            if ($request->ajax() || $request->wantsJson()) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Reservation modified successfully.',
+                    'order_id' => $redirectId,
+                    'redirect_url' => route('admin.reservations.show', ['id' => $redirectId])
+                ]);
+            }
+
+            return redirect()->route('admin.reservations.show', ['id' => $redirectId])
+                ->with('success', 'Reservation modified successfully.');
 
         } catch (\Exception $e) {
             DB::rollBack();
@@ -975,7 +983,12 @@ class FlowReservationController extends Controller
                 'draft_id' => $draft_id,
                 'trace' => $e->getTraceAsString()
             ]);
-            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+
+            if ($request->ajax() || $request->wantsJson()) {
+                return response()->json(['success' => false, 'message' => $e->getMessage()], 400);
+            }
+
+            return back()->withInput()->with('error', 'Modification failed: ' . $e->getMessage());
         }
     }
 
