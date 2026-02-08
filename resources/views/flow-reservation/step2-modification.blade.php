@@ -213,26 +213,92 @@
                             </div>
                         </div>
 
+                        <div id="cash_fields" style="display: none;">
+                            <hr class="my-4">
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label small fw-bold text-muted">Cash Tendered</label>
+                                    <div class="input-group">
+                                        <span class="input-group-text">$</span>
+                                        <input type="number" step="0.01" name="cash_tendered" id="cash_tendered" class="form-control form-control-lg" placeholder="0.00">
+                                    </div>
+                                    <div class="form-text text-danger" id="cash_warning" style="display:none;">
+                                        Insufficient cash tendered.
+                                    </div>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label small fw-bold text-muted">Change to Return</label>
+                                    <div class="h3 fw-bold text-success mb-0" id="cash_change">$0.00</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <input type="hidden" name="amount" id="amount_input" value="{{ $draft->grand_total - $draft->credit_amount }}">
+
                         <script>
                             document.addEventListener('DOMContentLoaded', function() {
                                 const methodSelect = document.getElementById('payment_method');
                                 const ccFields = document.getElementById('cc_fields');
+                                const cashFields = document.getElementById('cash_fields');
+                                const cashTenderedInput = document.getElementById('cash_tendered');
+                                const cashChangeDisplay = document.getElementById('cash_change');
+                                const cashWarning = document.getElementById('cash_warning');
                                 const deltaAmount = {{ $draft->grand_total - $draft->credit_amount }};
+                                const form = document.querySelector('form');
 
                                 function toggleFields() {
-                                    if (deltaAmount > 0 && methodSelect.value === 'Credit Card') {
+                                    const method = methodSelect.value;
+                                    
+                                    // CC Fields
+                                    if (deltaAmount > 0 && method === 'Credit Card') {
                                         ccFields.style.display = 'block';
                                         ccFields.querySelectorAll('input').forEach(i => i.required = true);
                                     } else {
                                         ccFields.style.display = 'none';
-                                        ccFields.querySelectorAll('input').forEach(i => {
-                                            i.required = false;
-                                            i.value = '';
-                                        });
+                                        ccFields.querySelectorAll('input').forEach(i => i.required = false);
+                                    }
+
+                                    // Cash Fields
+                                    if (deltaAmount > 0 && method === 'Cash') {
+                                        cashFields.style.display = 'block';
+                                        cashTenderedInput.required = true;
+                                        if (!cashTenderedInput.value) {
+                                            cashTenderedInput.value = deltaAmount.toFixed(2);
+                                        }
+                                        updateChange();
+                                    } else {
+                                        cashFields.style.display = 'none';
+                                        cashTenderedInput.required = false;
+                                    }
+                                }
+
+                                function updateChange() {
+                                    const tendered = parseFloat(cashTenderedInput.value) || 0;
+                                    const change = tendered - deltaAmount;
+                                    cashChangeDisplay.textContent = '$' + Math.max(0, change).toFixed(2);
+                                    
+                                    if (tendered < deltaAmount) {
+                                        cashWarning.style.display = 'block';
+                                        cashTenderedInput.classList.add('is-invalid');
+                                    } else {
+                                        cashWarning.style.display = 'none';
+                                        cashTenderedInput.classList.remove('is-invalid');
                                     }
                                 }
 
                                 methodSelect.addEventListener('change', toggleFields);
+                                cashTenderedInput.addEventListener('input', updateChange);
+                                
+                                form.addEventListener('submit', function(e) {
+                                    if (methodSelect.value === 'Cash') {
+                                        const tendered = parseFloat(cashTenderedInput.value) || 0;
+                                        if (tendered < deltaAmount) {
+                                            e.preventDefault();
+                                            toastr.error('Insufficient cash tendered.');
+                                        }
+                                    }
+                                });
+
                                 toggleFields(); // Init on load
                             });
                         </script>
