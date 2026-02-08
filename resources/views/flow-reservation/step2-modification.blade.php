@@ -179,11 +179,14 @@
                         <div class="row">
                             <div class="col-md-6 mb-3">
                                 <label class="form-label small fw-bold text-muted">Payment Method for Balance</label>
-                                <select name="payment_method" class="form-select form-select-lg" required>
+                                <select name="payment_method" id="payment_method" class="form-select form-select-lg" required>
                                     <option value="Account Credit">Modification Credit</option>
                                     <option value="Cash">Cash</option>
                                     <option value="Check">Check</option>
                                     <option value="Credit Card">Credit Card</option>
+                                    @if($primaryCustomer && $primaryCustomer->cardsOnFile->count() > 0)
+                                        <option value="Card On File">Use Card On File</option>
+                                    @endif
                                 </select>
                             </div>
                             <div class="col-md-6 mb-3">
@@ -191,6 +194,48 @@
                                 <input type="text" name="x_ref_num" class="form-control form-control-lg" placeholder="e.g. Check #101 or Transaction ID">
                             </div>
                         </div>
+
+                        <div id="cc_fields" style="display: none;">
+                            <hr class="my-4">
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label small fw-bold text-muted">Card Number</label>
+                                    <input type="text" name="xCardNum" class="form-control form-control-lg" placeholder="1234 5678 1234 5678">
+                                </div>
+                                <div class="col-md-3 mb-3">
+                                    <label class="form-label small fw-bold text-muted">Expiration</label>
+                                    <input type="text" name="xExp" class="form-control form-control-lg" placeholder="MM/YY">
+                                </div>
+                                <div class="col-md-3 mb-3">
+                                    <label class="form-label small fw-bold text-muted">CVV</label>
+                                    <input type="text" name="xCvv" class="form-control form-control-lg" placeholder="123">
+                                </div>
+                            </div>
+                        </div>
+
+                        <script>
+                            document.addEventListener('DOMContentLoaded', function() {
+                                const methodSelect = document.getElementById('payment_method');
+                                const ccFields = document.getElementById('cc_fields');
+                                const deltaAmount = {{ $draft->grand_total - $draft->credit_amount }};
+
+                                function toggleFields() {
+                                    if (deltaAmount > 0 && methodSelect.value === 'Credit Card') {
+                                        ccFields.style.display = 'block';
+                                        ccFields.querySelectorAll('input').forEach(i => i.required = true);
+                                    } else {
+                                        ccFields.style.display = 'none';
+                                        ccFields.querySelectorAll('input').forEach(i => {
+                                            i.required = false;
+                                            i.value = '';
+                                        });
+                                    }
+                                }
+
+                                methodSelect.addEventListener('change', toggleFields);
+                                toggleFields(); // Init on load
+                            });
+                        </script>
                     </div>
                 </div>
             </div>

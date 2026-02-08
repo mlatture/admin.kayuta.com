@@ -22,7 +22,8 @@ class Reservation extends Model
     protected $fillable = [
        'xconfnum', 'cartid', 'siteid', 'customernumber', 'cid', 'cod', 'siteclass',  'total',
        'fname', 'lname', 'email', 'status', 'reason', 'nights', 'createdby', 'subtotal', 'taxrate', 'totaltax', 
-       'base', 'sitelock', 'riglength', 'rigtype', 'checkedin', 'checkedout' ,'payment_id','group_confirmation_code'
+       'base', 'sitelock', 'riglength', 'rigtype', 'checkedin', 'checkedout' ,'payment_id','group_confirmation_code',
+       'totalcharges', 'receipt'
     ];
 
     protected $casts = [

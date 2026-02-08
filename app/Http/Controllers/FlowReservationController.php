@@ -24,6 +24,8 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB; // Added
 use Illuminate\Support\Facades\Schema; // Added
+use Illuminate\Support\Facades\Mail; // Added
+use App\Mail\ReservationModified; // Added
 use Illuminate\Support\Str;
 use App\Models\Infos;
 use Carbon\Carbon;
@@ -736,7 +738,7 @@ class FlowReservationController extends Controller
             return response()->json(['success' => false, 'message' => 'Original reservations not found.'], 404);
         }
 
-        $totalPaidOld = $oldReservations->sum('total');
+        $totalPaidOld = (float)$draft->credit_amount; 
         $grandTotalNew = (float)($draft->grand_total ?? 0);
         $delta = round($grandTotalNew - $totalPaidOld, 2);
 
@@ -846,8 +848,9 @@ class FlowReservationController extends Controller
             $receipt = Receipt::create(['cartid' => $draft->draft_id]);
 
             // 4. Record Payment or Refund
+            $newPayment = null;
             if ($delta > 0) {
-                Payment::create([
+                $newPayment = Payment::create([
                     'cartid' => $draft->draft_id,
                     'method' => $paymentMethodLabel,
                     'customernumber' => $customer->id,
@@ -872,6 +875,8 @@ class FlowReservationController extends Controller
             // 5. Build New Reservations (Atomic Swap)
             $cartData = is_array($draft->cart_data) ? $draft->cart_data : json_decode($draft->cart_data, true);
             $newReservationIds = [];
+            
+            // Generate a shared code for the successor group
             $groupConfirmationCode = $oldReservations->first()->group_confirmation_code ?? ('MOD-' . strtoupper(Str::random(10)));
 
             foreach ($cartData as $item) {
@@ -891,7 +896,7 @@ class FlowReservationController extends Controller
 
                 // Availability check (ignore originals)
                 $overlap = Reservation::where('siteid', $siteId)
-                    ->whereIn('status', ['confirmed', 'checkedin'])
+                    ->whereIn('status', ['confirmed', 'checkedin', 'Paid', 'Confirmed']) // broader check for status
                     ->whereNotIn('id', $originalResIds)
                     ->where(function ($q) use ($start, $end) {
                         $q->where('cid', '<', $end)
@@ -899,8 +904,12 @@ class FlowReservationController extends Controller
                     })->exists();
 
                 if ($overlap) {
-                    throw new \Exception("Site {$siteId} is no longer available for the selected dates.");
+                    throw new \Exception("Site {$siteId} is no longer available for the selected dates ($start to $end).");
                 }
+
+                $itemBase = (float)($item['base'] ?? 0);
+                $itemLock = (float)($item['lock_fee_amount'] ?? $item['fee'] ?? $item['site_lock_fee'] ?? 0);
+                $itemTotal = $itemBase + $itemLock;
 
                 $newRes = Reservation::create([
                     'xconfnum' => $xAuthCode,
@@ -913,14 +922,15 @@ class FlowReservationController extends Controller
                     'cid' => $scheduledCid,
                     'cod' => $scheduledCod,
                     'siteclass' => $site->siteclass ?? $item['siteclass'] ?? null,
-                    'total' => $item['grand_total'] ?? $item['total'] ?? 0,
-                    'totalcharges' => $item['grand_total'] ?? $item['total'] ?? 0,
-                    'subtotal' => $item['base'] ?? 0,
-                    'sitelock' => $item['fee'] ?? $item['site_lock_fee'] ?? 0,
+                    'total' => $itemTotal,
+                    'totalcharges' => $itemTotal,
+                    'subtotal' => $itemBase,
+                    'sitelock' => $itemLock,
                     'nights' => Carbon::parse($start)->diffInDays(Carbon::parse($end)),
                     'status' => 'confirmed',
                     'createdby' => 'Admin Modification',
                     'group_confirmation_code' => $groupConfirmationCode,
+                    'payment_id' => $newPayment ? $newPayment->id : ($oldReservations->first()->payment_id ?? null),
                     'receipt' => $receipt->id
                 ]);
 
@@ -960,6 +970,19 @@ class FlowReservationController extends Controller
 
             $draft->status = 'confirmed';
             $draft->save();
+
+            // 8. Notify Customer
+            try {
+                $newReservationsForEmail = Reservation::whereIn('id', $newReservationIds)->get()->toArray();
+                Mail::to($customer->email)->send(new ReservationModified(
+                    $draft->original_cart_id, 
+                    $draft->draft_id, 
+                    $draft->credit_amount, 
+                    $newReservationsForEmail
+                ));
+            } catch (\Exception $e) {
+                Log::error("Failed to send modification email: " . $e->getMessage());
+            }
 
             DB::commit();
 
