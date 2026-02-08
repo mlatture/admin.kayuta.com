@@ -241,7 +241,8 @@ class MoneyActionController extends Controller
                         'adults' => $res->people ?? 2,
                         'children' => 0 // children not explicitly separated in Reservation table?
                     ],
-                    'site_lock_fee' => $siteLockStatus
+                    'site_lock_fee' => $siteLockStatus,
+                    'original_reservation_id' => $res->id
                  ];
                  $subtotal += ($itemBase + $siteLockFeeAmount);
             }

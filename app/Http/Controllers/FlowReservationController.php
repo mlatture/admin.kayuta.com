@@ -659,9 +659,16 @@ class FlowReservationController extends Controller
             $end = $item['end_date'];
             
             // Find an exact match in original items
-            $match = $oldReservations->filter(function($old) use ($siteId, $start, $end, $matchedOldIds) {
-                return !in_array($old->id, $matchedOldIds) &&
-                       (string)$old->siteid == (string)$siteId &&
+            $match = $oldReservations->filter(function($old) use ($item, $siteId, $start, $end, $matchedOldIds) {
+                if (in_array($old->id, $matchedOldIds)) return false;
+
+                // Priority match by explicit ID
+                if (!empty($item['original_reservation_id']) && $old->id == $item['original_reservation_id']) {
+                    return true;
+                }
+
+                // Fallback fuzzy match (for items added before this fix or manual carts)
+                return (string)$old->siteid == (string)$siteId &&
                        $old->cid->format('Y-m-d') == $start &&
                        $old->cod->format('Y-m-d') == $end;
             })->first();
@@ -872,11 +879,13 @@ class FlowReservationController extends Controller
                 ]);
             }
 
-            // 5. Build New Reservations (Atomic Swap)
+            // 5. Build New Reservations (Incremental Swap)
             $cartData = is_array($draft->cart_data) ? $draft->cart_data : json_decode($draft->cart_data, true);
-            $newReservationIds = [];
+            $activeReservationIds = []; 
+            $actuallyCreatedResIds = [];
+            $originalResIdsMatched = [];
             
-            // Generate a shared code for the successor group
+            // Generate a shared code for the successor group if needed
             $groupConfirmationCode = $oldReservations->first()->group_confirmation_code ?? ('MOD-' . strtoupper(Str::random(10)));
 
             foreach ($cartData as $item) {
@@ -884,7 +893,31 @@ class FlowReservationController extends Controller
                 $start = $item['start_date'] ?? $item['cid'];
                 $end = $item['end_date'] ?? $item['cod'];
                 
-                // Scheduled check-in/out times
+                // 5a. Identify if this item is UNCHANGED
+                $existingId = $item['original_reservation_id'] ?? null;
+                $isUnchanged = false;
+                
+                if ($existingId) {
+                    $existingRes = Reservation::find($existingId);
+                    if ($existingRes && 
+                        (string)$existingRes->siteid == (string)$siteId && 
+                        $existingRes->cid->format('Y-m-d') == $start && 
+                        $existingRes->cod->format('Y-m-d') == $end) {
+                        
+                        $isUnchanged = true;
+                        $activeReservationIds[] = $existingRes->id;
+                        $originalResIdsMatched[] = $existingRes->id;
+                        
+                        // Ensure it has the correct group code and draft link if it was loose before
+                        if (empty($existingRes->group_confirmation_code)) {
+                            $existingRes->update(['group_confirmation_code' => $groupConfirmationCode]);
+                        }
+                    }
+                }
+
+                if ($isUnchanged) continue;
+
+                // 5b. Item is NEW or MODIFIED - Perform Availability Check
                 $site = Site::where('siteid', $siteId)->first();
                 $rateTier = $site ? RateTier::where('tier', $site->hookup)->first() : null;
                 
@@ -894,11 +927,13 @@ class FlowReservationController extends Controller
                 $scheduledCid = Carbon::parse($start)->format('Y-m-d') . ' ' . $inTime;
                 $scheduledCod = Carbon::parse($end)->format('Y-m-d') . ' ' . $outTime;
 
-                // Availability check (ignore originals)
-                $overlap = Reservation::where('siteid', $siteId)
-                    ->whereIn('status', ['confirmed', 'checkedin', 'Paid', 'Confirmed']) // broader check for status
-                    ->whereNotIn('id', $originalResIds)
-                    ->where(function ($q) use ($start, $end) {
+                // Availability check (ignore ANY original reservation associated with this draft)
+                $overlapQuery = Reservation::where('siteid', $siteId)
+                    ->whereIn('status', ['confirmed', 'checkedin', 'Paid', 'Confirmed'])
+                    ->whereNotIn('id', $originalResIds) // Ignore old ones
+                    ->whereNotIn('id', $actuallyCreatedResIds); // Ignore newly created ones in this loop
+
+                $overlap = $overlapQuery->where(function ($q) use ($start, $end) {
                         $q->where('cid', '<', $end)
                           ->where('cod', '>', $start);
                     })->exists();
@@ -934,7 +969,7 @@ class FlowReservationController extends Controller
                     'receipt' => $receipt->id
                 ]);
 
-                // Confirmation code
+                // Generate confirmation code
                 $tries = 0;
                 do {
                     $tries++;
@@ -944,15 +979,19 @@ class FlowReservationController extends Controller
                 $newRes->confirmation_code = $code;
                 $newRes->save();
 
-                $newReservationIds[] = $newRes->id;
+                $activeReservationIds[] = $newRes->id;
+                $actuallyCreatedResIds[] = $newRes->id;
             }
 
-            // 6. Cancel Old Reservations
-            $newResIdsStr = implode(', ', $newReservationIds);
-            Reservation::whereIn('id', $originalResIds)->update([
-                'status' => 'Cancelled',
-                'reason' => "Modified. Successors: {$newResIdsStr} (Draft: {$draft->draft_id})"
-            ]);
+            // 6. Cancel Removed Reservations
+            $toCancelIds = array_diff($originalResIds, $originalResIdsMatched);
+            if (!empty($toCancelIds)) {
+                $activeResIdsStr = implode(', ', $activeReservationIds);
+                Reservation::whereIn('id', $toCancelIds)->update([
+                    'status' => 'Cancelled',
+                    'reason' => "Modified/Removed. Active Successors: {$activeResIdsStr} (Draft: {$draft->draft_id})"
+                ]);
+            }
 
             // 7. Cards On File
             if ($apiPaymentMethod === 'card' && $gatewayResponse && isset($gatewayResponse['xToken'])) {
@@ -973,12 +1012,12 @@ class FlowReservationController extends Controller
 
             // 8. Notify Customer
             try {
-                $newReservationsForEmail = Reservation::whereIn('id', $newReservationIds)->get()->toArray();
+                $allActiveReservations = Reservation::whereIn('id', $activeReservationIds)->get()->toArray();
                 Mail::to($customer->email)->send(new ReservationModified(
                     $draft->original_cart_id, 
                     $draft->draft_id, 
                     $draft->credit_amount, 
-                    $newReservationsForEmail
+                    $allActiveReservations
                 ));
             } catch (\Exception $e) {
                 Log::error("Failed to send modification email: " . $e->getMessage());
@@ -986,7 +1025,7 @@ class FlowReservationController extends Controller
 
             DB::commit();
 
-            $redirectId = $newReservationIds[0] ?? $draft->draft_id;
+            $redirectId = $activeReservationIds[0] ?? $draft->draft_id;
 
             if ($request->ajax() || $request->wantsJson()) {
                 return response()->json([
