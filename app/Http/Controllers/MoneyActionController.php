@@ -276,4 +276,40 @@ class MoneyActionController extends Controller
             return redirect()->back()->with('error', 'Failed to start modification: ' . $e->getMessage());
         }
     }
+
+    public function refundSingle(Request $request, $id)
+    {
+        $request->validate([
+            'refund_amount' => 'required|numeric|min:0.01',
+            'reason' => 'required|string|max:500',
+            'method' => 'required|in:credit_card,cash,other,account_credit,gift_card',
+        ]);
+
+        try {
+            $reservation = Reservation::findOrFail($id);
+            
+            $total = (float) $reservation->total;
+            $refund = (float) $request->refund_amount;
+            $feeAmount = max(0, $total - $refund);
+            $feePercent = $total > 0 ? ($feeAmount / $total) * 100 : 0;
+
+            $this->moneyService->cancel(
+                $reservation, 
+                [$reservation->id], 
+                $feePercent, 
+                $request->reason, 
+                $request->method
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Refund processed successfully.'
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Refund failed: ' . $e->getMessage()
+            ], 422);
+        }
+    }
 }

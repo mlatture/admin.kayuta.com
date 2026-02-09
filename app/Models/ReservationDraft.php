@@ -28,5 +28,6 @@ class ReservationDraft extends Model
 
     protected $casts = [
         'cart_data' => 'array',
+        'original_reservation_ids' => 'array',
     ];
 }

@@ -233,4 +233,119 @@ class OrderController extends Controller
             201,
         );
     }
+    public function indexPayments(Request $request)
+    {
+        $query = Reservation::query()
+            ->whereNotNull('group_confirmation_code')
+            ->select(
+                'group_confirmation_code',
+                DB::raw('MIN(cid) as min_cid'),
+                DB::raw('MAX(cod) as max_cod'),
+                DB::raw('SUM(total) as grand_total'),
+                DB::raw('MAX(fname) as fname'),
+                DB::raw('MAX(lname) as lname'),
+                DB::raw('MAX(email) as email'),
+                DB::raw('MAX(cartid) as cartid')
+            )
+            ->groupBy('group_confirmation_code');
+
+        if ($request->search) {
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                $q->where('group_confirmation_code', 'like', "%$search%")
+                  ->orWhere('fname', 'like', "%$search%")
+                  ->orWhere('lname', 'like', "%$search%")
+                  ->orWhere('email', 'like', "%$search%");
+            });
+        }
+
+        $checkouts = $query->latest('min_cid')->paginate(15);
+
+        // For each checkout, we need to calculate total paid across all reservations in that group
+        foreach ($checkouts as $checkout) {
+            $cartIds = Reservation::where('group_confirmation_code', $checkout->group_confirmation_code)
+                ->pluck('cartid')
+                ->unique();
+            
+            $checkout->total_paid = DB::table('payments')
+                ->whereIn('cartid', $cartIds)
+                ->sum('payment');
+            
+            $checkout->total_refunds = DB::table('refunds')
+                ->whereIn('cartid', $cartIds)
+                ->sum('amount');
+            
+            $checkout->net_paid = $checkout->total_paid - $checkout->total_refunds;
+            $checkout->balance = $checkout->grand_total - $checkout->net_paid;
+        }
+
+        return view('admin.orders.index_payments', compact('checkouts'));
+    }
+
+    public function showOrder($confirmation_code)
+    {
+        $reservations = Reservation::where('group_confirmation_code', $confirmation_code)
+            ->with(['site', 'user'])
+            ->get();
+
+        if ($reservations->isEmpty()) {
+            abort(404, 'Order not found.');
+        }
+
+        $mainRes = $reservations->first();
+        $cartIds = $reservations->pluck('cartid')->unique();
+
+        // Financials
+        $totalCharges = $reservations->sum('total');
+        $payments = DB::table('payments')->whereIn('cartid', $cartIds)->get();
+        $totalPayments = $payments->sum('payment');
+        $refunds = DB::table('refunds')->whereIn('cartid', $cartIds)->get();
+        $totalRefunds = $refunds->sum('amount');
+        $balanceDue = $totalCharges - ($totalPayments - $totalRefunds);
+
+        // Transaction History (Ledger)
+        $ledger = collect();
+
+        foreach ($reservations as $res) {
+            $ledger->push([
+                'date' => $res->created_at,
+                'type' => 'charge',
+                'description' => "Initial Reservation: Site {$res->siteid}",
+                'amount' => $res->total,
+                'ref' => $res->confirmation_code
+            ]);
+        }
+
+        foreach ($payments as $p) {
+            $ledger->push([
+                'date' => $p->created_at,
+                'type' => 'payment',
+                'description' => "Payment via {$p->method}",
+                'amount' => -$p->payment,
+                'ref' => $p->x_ref_num ?? $p->receipt
+            ]);
+        }
+
+        foreach ($refunds as $r) {
+            $ledger->push([
+                'date' => $r->created_at,
+                'type' => 'refund',
+                'description' => "Refund: {$r->reason}",
+                'amount' => $r->amount,
+                'ref' => $r->x_ref_num
+            ]);
+        }
+
+        $ledger = $ledger->sortBy('date');
+
+        return view('admin.orders.show_order', compact(
+            'reservations',
+            'mainRes',
+            'totalCharges',
+            'totalPayments',
+            'totalRefunds',
+            'balanceDue',
+            'ledger'
+        ));
+    }
 }

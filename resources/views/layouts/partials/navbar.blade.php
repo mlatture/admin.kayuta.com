@@ -136,6 +136,15 @@
                     </div>
                 </a>
             </li>
+            <li class="nav-item">
+                <a href="{{ route('admin.payments.index') }}"
+                    class="nav-link {{ activeSegment('payments') }}">
+                    <div class="d-flex align-items-center">
+                        <i class="nav-icon fas fa-credit-card me-2"></i>
+                        <span>Payments</span>
+                    </div>
+                </a>
+            </li>
         @endHasPermission
         
         <li class="nav-item">
