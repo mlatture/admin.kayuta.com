@@ -432,8 +432,8 @@ Route::prefix('admin')
             Route::post('refund-single/{id}', [MoneyActionController::class, 'refundSingle'])->name('admin.money.refund-single');
         });
 
-        Route::get('payments', [OrderController::class, 'indexPayments'])->name('admin.payments.index');
-        Route::get('orders/detail/{confirmation_code}', [OrderController::class, 'showOrder'])->name('admin.orders.show');
+        Route::get('/admin/unified-bookings', [OrderController::class, 'indexUnifiedBookings'])->name('admin.unified-bookings.index');
+        Route::get('/admin/unified-bookings/{confirmation_code}', [OrderController::class, 'showUnifiedBooking'])->name('admin.unified-bookings.show');
         
         // Legacy Redirects
         Route::get('reservations/edit/{id}', function ($id) {

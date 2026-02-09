@@ -137,11 +137,11 @@
                 </a>
             </li>
             <li class="nav-item">
-                <a href="{{ route('admin.payments.index') }}"
-                    class="nav-link {{ activeSegment('payments') }}">
+                <a href="{{ route('admin.unified-bookings.index') }}"
+                    class="nav-link {{ Request::is('admin/unified-bookings*') ? 'active' : '' }}">
                     <div class="d-flex align-items-center">
-                        <i class="nav-icon fas fa-credit-card me-2"></i>
-                        <span>Payments</span>
+                        <i class="tio-wallet me-2"></i>
+                        <span>Unified Bookings</span>
                     </div>
                 </a>
             </li>
