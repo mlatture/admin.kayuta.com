@@ -19,19 +19,34 @@
                 </h1>
             </div>
             <div class="col-sm-auto">
-                @if($balanceDue <= 0)
-                    <span class="badge bg-soft-success text-success px-3 py-2" style="font-size: 1rem;">
-                        <i class="tio-checkmark-circle me-1"></i> Fully Paid
-                    </span>
-                @elseif($totalPayments > 0)
-                    <span class="badge bg-soft-warning text-warning px-3 py-2" style="font-size: 1rem;">
-                        <i class="tio-time me-1"></i> Partially Paid
-                    </span>
-                @else
-                    <span class="badge bg-soft-danger text-danger px-3 py-2" style="font-size: 1rem;">
-                        <i class="tio-clear me-1"></i> Unpaid
-                    </span>
-                @endif
+                <div class="d-flex gap-2 align-items-center">
+                    @if($balanceDue <= 0)
+                        <span class="badge bg-soft-success text-success px-3 py-2" style="font-size: 1rem;">
+                            <i class="tio-checkmark-circle me-1"></i> Fully Paid
+                        </span>
+                    @elseif($totalPayments > 0)
+                        <span class="badge bg-soft-warning text-warning px-3 py-2" style="font-size: 1rem;">
+                            <i class="tio-time me-1"></i> Partially Paid
+                        </span>
+                    @else
+                        <span class="badge bg-soft-danger text-danger px-3 py-2" style="font-size: 1rem;">
+                            <i class="tio-clear me-1"></i> Unpaid
+                        </span>
+                    @endif
+
+                    <a href="{{ route('admin.reservations.modify', $mainRes->id) }}" class="btn btn-white">
+                        <i class="tio-edit me-1"></i> Modify
+                    </a>
+                    
+                    @php
+                        $hasActiveReservations = $reservations->where('status', '!=', 'Cancelled')->count() > 0;
+                    @endphp
+                    @if($hasActiveReservations)
+                    <button type="button" class="btn btn-danger" onclick="refundBooking()">
+                        <i class="tio-money-vs me-1"></i> Refund
+                    </button>
+                    @endif
+                </div>
             </div>
         </div>
     </div>
@@ -94,7 +109,6 @@
                                     <th>Nights</th>
                                     <th class="text-end">Total</th>
                                     <th>Status</th>
-                                    <th class="text-end">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -115,21 +129,6 @@
                                         @else
                                             <span class="badge bg-soft-primary text-primary">Active</span>
                                         @endif
-                                    </td>
-                                    <td class="text-end">
-                                        <div class="btn-group btn-group-sm" role="group">
-                                            <a href="{{ route('admin.reservations.modify', $res->id) }}" 
-                                               class="btn btn-white" title="Modify">
-                                                <i class="tio-edit"></i>
-                                            </a>
-                                            @if($res->status !== 'Cancelled')
-                                            <button type="button" class="btn btn-white text-danger" 
-                                                    onclick="refundReservation({{ $res->id }}, {{ $res->total }})" 
-                                                    title="Refund">
-                                                <i class="tio-money-vs"></i>
-                                            </button>
-                                            @endif
-                                        </div>
                                     </td>
                                 </tr>
                                 @endforeach
@@ -276,6 +275,89 @@
 </style>
 
 <script>
+function refundBooking() {
+    const activeReservations = @json($reservations->where('status', '!=', 'Cancelled')->values());
+    const totalAmount = activeReservations.reduce((sum, res) => sum + parseFloat(res.total), 0);
+    
+    Swal.fire({
+        title: 'Refund Booking',
+        html: `
+            <div class="mb-3">
+                <label class="form-label">Refund Amount</label>
+                <input type="number" id="refund_amount" class="form-control" 
+                       placeholder="0.00" step="0.01" max="${totalAmount.toFixed(2)}" value="${totalAmount.toFixed(2)}">
+                <small class="text-muted">Maximum: $${totalAmount.toFixed(2)}</small>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Reason</label>
+                <textarea id="refund_reason" class="form-control" rows="3" 
+                          placeholder="Enter refund reason..."></textarea>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Refund Method</label>
+                <select id="refund_method" class="form-control">
+                    <option value="credit_card">Credit Card</option>
+                    <option value="cash">Cash</option>
+                    <option value="account_credit">Account Credit</option>
+                    <option value="gift_card">Gift Card</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+        `,
+        showCancelButton: true,
+        confirmButtonText: 'Process Refund',
+        confirmButtonColor: '#dc3545',
+        cancelButtonText: 'Cancel',
+        preConfirm: () => {
+            const amount = document.getElementById('refund_amount').value;
+            const reason = document.getElementById('refund_reason').value;
+            const method = document.getElementById('refund_method').value;
+
+            if (!amount || amount <= 0) {
+                Swal.showValidationMessage('Please enter a valid refund amount');
+                return false;
+            }
+            if (!reason) {
+                Swal.showValidationMessage('Please enter a refund reason');
+                return false;
+            }
+
+            return { amount, reason, method };
+        }
+    }).then((result) => {
+        if (result.isConfirmed) {
+            // Refund the first active reservation (you can modify this logic)
+            const firstActiveRes = activeReservations[0];
+            
+            fetch(`/admin/money/refund-single/${firstActiveRes.id}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+                },
+                body: JSON.stringify({
+                    refund_amount: result.value.amount,
+                    reason: result.value.reason,
+                    method: result.value.method
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    Swal.fire('Success!', data.message, 'success').then(() => {
+                        location.reload();
+                    });
+                } else {
+                    Swal.fire('Error!', data.message, 'error');
+                }
+            })
+            .catch(error => {
+                Swal.fire('Error!', 'Failed to process refund', 'error');
+            });
+        }
+    });
+}
+
 function refundReservation(reservationId, total) {
     Swal.fire({
         title: 'Process Refund',
