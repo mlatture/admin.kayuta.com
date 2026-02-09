@@ -119,14 +119,14 @@
                                     <td class="text-end">
                                         <div class="btn-group btn-group-sm" role="group">
                                             <a href="{{ route('admin.reservations.modify', $res->id) }}" 
-                                               class="btn btn-white" title="Modify">
-                                                <i class="tio-edit"></i>
+                                               class="btn btn-primary" title="Modify">
+                                                <i class="tio-edit me-1"></i> Modify
                                             </a>
                                             @if($res->status !== 'Cancelled')
-                                            <button type="button" class="btn btn-white text-danger" 
+                                            <button type="button" class="btn btn-danger" 
                                                     onclick="refundReservation({{ $res->id }}, {{ $res->total }})" 
                                                     title="Refund">
-                                                <i class="tio-money-vs"></i>
+                                                <i class="tio-money-vs me-1"></i> Refund
                                             </button>
                                             @endif
                                         </div>
