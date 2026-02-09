@@ -287,25 +287,122 @@ class MoneyActionController extends Controller
 
         try {
             $reservation = Reservation::findOrFail($id);
-            
-            $total = (float) $reservation->total;
-            $refund = (float) $request->refund_amount;
-            $feeAmount = max(0, $total - $refund);
-            $feePercent = $total > 0 ? ($feeAmount / $total) * 100 : 0;
+            $refundAmount = (float) $request->refund_amount;
+            $refundMethod = $request->method;
+            $refundReason = $request->reason;
 
-            $this->moneyService->cancel(
-                $reservation, 
-                [$reservation->id], 
-                $feePercent, 
-                $request->reason, 
-                $request->method
+            // Validate refund amount doesn't exceed reservation total
+            if ($refundAmount > $reservation->total) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Refund amount cannot exceed reservation total of $' . number_format($reservation->total, 2)
+                ], 422);
+            }
+
+            DB::beginTransaction();
+
+            $xRefNum = null;
+            $gatewayResponse = null;
+
+            // Handle Credit Card Refund via Cardknox Gateway
+            if ($refundMethod === 'credit_card') {
+                // Find original payment with x_ref_num
+                $originalPayment = Payment::where('cartid', $reservation->cartid)
+                    ->whereNotNull('x_ref_num')
+                    ->orderBy('id', 'desc')
+                    ->first();
+
+                if (!$originalPayment || !$originalPayment->x_ref_num) {
+                    DB::rollBack();
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Cannot process credit card refund: No original payment reference found. Please use a different refund method.'
+                    ], 422);
+                }
+
+                // Call Cardknox Refund API
+                $apiKey = config('services.cardknox.api_key');
+                $postData = [
+                    'xKey'             => $apiKey,
+                    'xVersion'         => '4.5.5',
+                    'xCommand'         => 'cc:Refund',
+                    'xAmount'          => number_format($refundAmount, 2, '.', ''),
+                    'xRefNum'          => $originalPayment->x_ref_num,
+                    'xSoftwareVersion' => '1.0',
+                    'xSoftwareName'    => 'KayutaLake',
+                    'xInvoice'         => 'REFUND-' . $reservation->id . '-' . time(),
+                ];
+
+                $ch = curl_init('https://x1.cardknox.com/gateway');
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($postData));
+                curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                    'Content-type: application/x-www-form-urlencoded',
+                    'X-Recurring-Api-Version: 1.0',
+                ]);
+                
+                $response = curl_exec($ch);
+                
+                if ($response === false) {
+                    $error = curl_error($ch);
+                    curl_close($ch);
+                    DB::rollBack();
+                    throw new \Exception("Payment gateway connection failed: " . $error);
+                }
+                
+                curl_close($ch);
+                parse_str($response, $gatewayResponse);
+
+                // Validate gateway response
+                if (($gatewayResponse['xStatus'] ?? '') !== 'Approved') {
+                    DB::rollBack();
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Gateway refund failed: ' . ($gatewayResponse['xError'] ?? 'Transaction declined')
+                    ], 422);
+                }
+
+                $xRefNum = $gatewayResponse['xRefNum'] ?? null;
+            }
+
+            // Create Refund Record
+            Refund::create([
+                'cartid' => $reservation->cartid,
+                'amount' => $refundAmount,
+                'method' => ucfirst(str_replace('_', ' ', $refundMethod)),
+                'reason' => $refundReason,
+                'x_ref_num' => $xRefNum,
+                'created_by' => auth()->id() ?? 0,
+                'reservations_id' => $reservation->id
+            ]);
+
+            // Update reservation status to Cancelled
+            $reservation->update([
+                'status' => 'Cancelled',
+                'reason' => 'Refunded: ' . $refundReason
+            ]);
+
+            // Log the action
+            ReservationLogService::log(
+                $reservation->id,
+                'refund_processed',
+                "Refund of $" . number_format($refundAmount, 2) . " processed. Reason: {$refundReason}",
+                auth()->id()
             );
+
+            DB::commit();
 
             return response()->json([
                 'success' => true,
-                'message' => 'Refund processed successfully.'
+                'message' => 'Refund of $' . number_format($refundAmount, 2) . ' processed successfully.',
+                'refund_amount' => $refundAmount,
+                'gateway_ref' => $xRefNum
             ]);
+
         } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("Refund failed for reservation {$id}: " . $e->getMessage());
+            
             return response()->json([
                 'success' => false,
                 'message' => 'Refund failed: ' . $e->getMessage()
