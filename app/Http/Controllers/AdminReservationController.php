@@ -46,19 +46,21 @@ public function show(Request $request, $id)
 
     $reservationsQuery = Reservation::query();
 
-    if (!empty($paymentId)) {
-        // Best grouping: one payment record ties all reservations
-        $reservationsQuery->where('payment_id', $paymentId);
-    } elseif (!empty($groupCode)) {
-        // Next: shared group code
-        $reservationsQuery->where('group_confirmation_code', $groupCode);
-    } elseif (!empty($xconfnum)) {
-        // Next: gateway auth code
-        $reservationsQuery->where('xconfnum', $xconfnum);
-    } else {
-        // Fallback: cartid
-        $reservationsQuery->where('cartid', $clickedReservation->cartid);
-    }
+    $reservationsQuery = Reservation::query();
+
+    $reservationsQuery->where(function($q) use ($paymentId, $groupCode, $xconfnum, $clickedReservation) {
+        $q->where('cartid', $clickedReservation->cartid);
+        
+        if (!empty($paymentId)) {
+            $q->orWhere('payment_id', $paymentId);
+        }
+        if (!empty($groupCode)) {
+            $q->orWhere('group_confirmation_code', $groupCode);
+        }
+        if (!empty($xconfnum)) {
+            $q->orWhere('xconfnum', $xconfnum);
+        }
+    });
 
     $reservations = $reservationsQuery
         ->with(['payment', 'site', 'user'])
@@ -72,24 +74,20 @@ public function show(Request $request, $id)
     $user = User::find($mainReservation->customernumber);
 
     // ---------------------------------------------------------
-    // 3) Collect cartIds for additional payments/refunds
+    // 3) Collect cartIds and associated payments/refunds
     // ---------------------------------------------------------
     $cartIds = $reservations->pluck('cartid')->filter()->unique()->values();
+    $paymentIds = $reservations->pluck('payment_id')->filter()->unique()->values();
 
-    $payments = collect(); // kept for view compatibility
+    $payments = \App\Models\Payment::whereIn('id', $paymentIds)
+        ->orWhereIn('cartid', $cartIds)
+        ->get();
+
     $additionalPayments = \App\Models\AdditionalPayment::whereIn('cartid', $cartIds)->get();
     $refunds = \App\Models\Refund::where(function($query) use ($cartIds, $reservations) {
         $query->whereIn('cartid', $cartIds)
               ->orWhereIn('reservations_id', $reservations->pluck('id'));
     })->get();
-
-    // Checkout payment (single record)
-    $checkoutPayment = null;
-    if (!empty($mainReservation->payment_id)) {
-        $checkoutPayment = \App\Models\Payment::find($mainReservation->payment_id);
-    } else {
-        $checkoutPayment = $mainReservation->payment ?? null;
-    }
 
     // ---------------------------------------------------------
     // 4) Logs (safe)
@@ -180,6 +178,20 @@ public function show(Request $request, $id)
                 'raw_obj'     => $res,
                 'seq'         => 10,
             ]);
+
+            // If reservation is cancelled, reverse the charge in the ledger
+            if (in_array(strtolower($res->status), ['cancelled', 'cancel'])) {
+                $ledger->push([
+                    'id'          => 'site-cancel-' . $res->id,
+                    'date'        => $res->updated_at ?? $res->created_at,
+                    'description' => "Cancellation Credit: {$res->siteid}{$stayLabel}",
+                    'type'        => 'charge',
+                    'amount'      => -$siteCharge,
+                    'ref'         => 'CANCELLED',
+                    'raw_obj'     => $res,
+                    'seq'         => 15,
+                ]);
+            }
         }
 
         // ✅ Site lock shows which site it belongs to
@@ -194,6 +206,19 @@ public function show(Request $request, $id)
                 'raw_obj'     => $res,
                 'seq'         => 20,
             ]);
+
+            if (in_array(strtolower($res->status), ['cancelled', 'cancel'])) {
+                $ledger->push([
+                    'id'          => 'lock-cancel-' . $res->id,
+                    'date'        => $res->updated_at ?? $res->created_at,
+                    'description' => "Site Lock Reversal ({$res->siteid})",
+                    'type'        => 'charge',
+                    'amount'      => -round($siteLock, 2),
+                    'ref'         => 'CANCELLED',
+                    'raw_obj'     => $res,
+                    'seq'         => 21,
+                ]);
+            }
         }
 
         // ✅ Addon lines (show which site they belong to)
@@ -229,6 +254,19 @@ public function show(Request $request, $id)
                     'raw_obj'     => $addon,
                     'seq'         => 25,
                 ]);
+
+                if (in_array(strtolower($res->status), ['cancelled', 'cancel'])) {
+                    $ledger->push([
+                        'id'          => "addon-cancel-{$res->id}-{$idx}",
+                        'date'        => $res->updated_at ?? $res->created_at,
+                        'description' => "Addon Reversal: {$rawName} ({$belongsToSite})",
+                        'type'        => 'charge',
+                        'amount'      => -round($price, 2),
+                        'ref'         => 'CANCELLED',
+                        'raw_obj'     => $addon,
+                        'seq'         => 26,
+                    ]);
+                }
             }
         }
 
@@ -248,9 +286,9 @@ public function show(Request $request, $id)
     }
 
     // ---------------------------------------------------------
-    // 7) One checkout payment line
+    // 7) Payment lines
     // ---------------------------------------------------------
-    if ($checkoutPayment) {
+    foreach ($payments as $p) {
         $masked = null;
         try {
             $card = \App\Models\CardsOnFile::where('customernumber', $user->id)
@@ -259,20 +297,20 @@ public function show(Request $request, $id)
             $masked = $card->xmaskedcardnumber ?? null;
         } catch (\Throwable $e) {}
 
-        $method = $checkoutPayment->method ?? 'Card';
+        $method = $p->method ?? 'Card';
         $desc   = "Payment – {$method}";
-        if (!empty($masked)) {
+        if (!empty($masked) && $method !== 'Cash' && $method !== 'Check') {
             $desc .= " {$masked}";
         }
 
         $ledger->push([
-            'id'          => 'checkout-payment-' . $checkoutPayment->id,
-            'date'        => $checkoutPayment->created_at ?? $mainReservation->created_at,
+            'id'          => 'payment-' . $p->id,
+            'date'        => $p->created_at ?? $mainReservation->created_at,
             'description' => $desc,
             'type'        => 'payment',
-            'amount'      => -abs((float)($checkoutPayment->payment ?? 0)),
-            'ref'         => $checkoutPayment->x_ref_num ?? null,
-            'raw_obj'     => $checkoutPayment,
+            'amount'      => -abs((float)($p->payment ?? 0)),
+            'ref'         => $p->x_ref_num ?? null,
+            'raw_obj'     => $p,
             'seq'         => 90,
         ]);
     }
@@ -331,6 +369,8 @@ public function show(Request $request, $id)
     // 9) Refunds
     // ---------------------------------------------------------
     foreach ($refunds as $rf) {
+        $isModCredit = (stripos($rf->method ?? '', 'Modification Credit') !== false);
+
         if (($rf->cancellation_fee ?? 0) > 0) {
             $ledger->push([
                 'id'          => 'cancel-fee-' . $rf->id,
@@ -348,9 +388,9 @@ public function show(Request $request, $id)
             $ledger->push([
                 'id'          => 'refund-' . $rf->id,
                 'date'        => $rf->created_at,
-                'description' => 'Refund Issued',
+                'description' => $isModCredit ? 'Modification Credit (Applied to new stay)' : 'Refund Issued',
                 'type'        => 'refund',
-                'amount'      => (float)$rf->amount,
+                'amount'      => $isModCredit ? 0.0 : (float)$rf->amount, // Mod credits don't affect balance; cancellation lines do
                 'ref'         => $rf->method ?? null,
                 'raw_obj'     => $rf,
                 'seq'         => 80,

@@ -639,7 +639,7 @@ class FlowReservationController extends Controller
     }
     private function getModificationSummary($draft)
     {
-        $originalResIds = json_decode($draft->original_reservation_ids ?? '[]', true);
+        $originalResIds = $draft->original_reservation_ids ?? [];
         $oldReservations = Reservation::whereIn('id', $originalResIds)->with('site')->get();
         $newItems = collect($draft->cart_data);
         
@@ -738,7 +738,7 @@ class FlowReservationController extends Controller
     {
         $draft = ReservationDraft::where('draft_id', $draft_id)->firstOrFail();
         
-        $originalResIds = json_decode($draft->original_reservation_ids ?? '[]', true);
+        $originalResIds = $draft->original_reservation_ids ?? [];
         $oldReservations = Reservation::whereIn('id', $originalResIds)->with('site')->get();
 
         if ($oldReservations->isEmpty()) {
@@ -987,8 +987,24 @@ class FlowReservationController extends Controller
             $toCancelIds = array_diff($originalResIds, $originalResIdsMatched);
             if (!empty($toCancelIds)) {
                 $activeResIdsStr = implode(', ', $activeReservationIds);
+                
+                // Get the reservations to be cancelled to record explicit refunds/credits
+                $reservationsToCancel = Reservation::whereIn('id', $toCancelIds)->get();
+                
+                foreach ($reservationsToCancel as $rtc) {
+                    Refund::create([
+                        'cartid' => $draft->draft_id,
+                        'amount' => $rtc->total,
+                        'method' => 'Modification Credit',
+                        'reason' => "Removed/Modified site {$rtc->siteid}",
+                        'reservations_id' => $rtc->id,
+                        'created_by' => auth()->id() ?? 0
+                    ]);
+                }
+
                 Reservation::whereIn('id', $toCancelIds)->update([
                     'status' => 'Cancelled',
+                    'group_confirmation_code' => $groupConfirmationCode,
                     'reason' => "Modified/Removed. Active Successors: {$activeResIdsStr} (Draft: {$draft->draft_id})"
                 ]);
             }

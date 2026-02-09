@@ -429,7 +429,11 @@ Route::prefix('admin')
             Route::post('move/{id}', [MoneyActionController::class, 'moveSite'])->name('admin.money.move');
             Route::post('change-dates/{id}', [MoneyActionController::class, 'changeDates'])->name('admin.money.change-dates');
             Route::get('modify/{id}', [MoneyActionController::class, 'startModification'])->name('admin.reservations.modify');
+            Route::post('refund-single/{id}', [MoneyActionController::class, 'refundSingle'])->name('admin.money.refund-single');
         });
+
+        Route::get('payments', [OrderController::class, 'indexPayments'])->name('admin.payments.index');
+        Route::get('orders/detail/{confirmation_code}', [OrderController::class, 'showOrder'])->name('admin.orders.show');
         
         // Legacy Redirects
         Route::get('reservations/edit/{id}', function ($id) {
