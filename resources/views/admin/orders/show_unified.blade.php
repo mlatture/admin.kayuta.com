@@ -140,7 +140,7 @@
             </div>
 
             <!-- Financial Ledger -->
-            <div class="card shadow-sm">
+            <div class="card shadow-sm mb-4">
                 <div class="card-header bg-white">
                     <h5 class="card-header-title mb-0">
                         <i class="tio-receipt me-2"></i> Financial Ledger
@@ -205,6 +205,60 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Refund History -->
+            @if($refunds->isNotEmpty())
+            <div class="card shadow-sm">
+                <div class="card-header bg-white">
+                    <h5 class="card-header-title mb-0">
+                        <i class="tio-money-vs me-2"></i> Refund Details
+                    </h5>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-borderless table-nowrap table-align-middle mb-0">
+                            <thead class="thead-light">
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Site</th>
+                                    <th>Amount</th>
+                                    <th>Method</th>
+                                    <th>Reason</th>
+                                    <th>Created By</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach($refunds as $refund)
+                                @php
+                                    $res = $reservations->firstWhere('id', $refund->reservations_id);
+                                    $siteName = $res ? ($res->site->sitename ?? $res->siteid) : '—';
+                                @endphp
+                                <tr>
+                                    <td>{{ \Carbon\Carbon::parse($refund->created_at)->format('M d, Y') }}</td>
+                                    <td>
+                                        @if($res)
+                                            <span class="badge bg-soft-info text-info">{{ $siteName }}</span>
+                                        @else
+                                            <span class="text-muted">N/A</span>
+                                        @endif
+                                    </td>
+                                    <td class="fw-bold text-danger">${{ number_format($refund->amount, 2) }}</td>
+                                    <td><span class="text-capitalize">{{ str_replace('_', ' ', $refund->method) }}</span></td>
+                                    <td class="text-wrap" style="max-width: 200px;">
+                                        {{ $refund->reason }}
+                                        @if(!empty($refund->override_reason))
+                                            <br><small class="text-muted italic">Override: {{ $refund->override_reason }}</small>
+                                        @endif
+                                    </td>
+                                    <td>{{ $refund->created_by }}</td>
+                                </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            @endif
         </div>
 
         <!-- Right Column: Financial Summary -->
