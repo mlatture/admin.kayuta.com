@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Schema;
 use App\Services\ReservationLogService;
 use App\Models\ReservationLog;
+use App\Services\MoneyActionService;
 
 class AdminReservationController extends Controller
 {
@@ -611,6 +612,120 @@ public function show(Request $request, $id)
         } catch (\Throwable $e) {
             // bypass silently
             return;
+        }
+    }
+
+    public function modifyReservation($id)
+    {
+        $reservation = Reservation::with(['site', 'user'])->findOrFail($id);
+        return view('admin.reservations.modify_reservation', compact('reservation'));
+    }
+
+    public function calculateNewPrice(Request $request, $id)
+    {
+        try {
+            $reservation = Reservation::findOrFail($id);
+            $newCid = Carbon::parse($request->cid);
+            $newCod = Carbon::parse($request->cod);
+
+            if ($newCod->lte($newCid)) {
+                return response()->json(['error' => 'Checkout must be after Check-in'], 422);
+            }
+
+            $service = app(MoneyActionService::class);
+            
+            // Reflected pricing logic from MoneyActionService calculatePriceForDates/applyNightsPricing
+            $site = \App\Models\Site::where('siteid', $reservation->siteid)->firstOrFail();
+            $rateTier = \App\Models\RateTier::where('tier', $site->ratetier)->firstOrFail();
+            $nights = $newCod->diffInDays($newCid);
+
+            $newBasePrice = 0;
+            if ($nights < 7) {
+                $newBasePrice = $rateTier->flatrate * $nights;
+            } elseif ($nights == 7) {
+                $newBasePrice = $rateTier->weeklyrate;
+            } else {
+                $extraNights = $nights - 7;
+                $newBasePrice = $rateTier->weeklyrate + ($extraNights * $rateTier->flatrate);
+            }
+
+            $taxRate = $reservation->taxrate ?: 0.0875;
+            $siteLock = (float)($reservation->sitelock ?? 0);
+            
+            $newSubtotal = $newBasePrice + $siteLock;
+            $newTax = round($newSubtotal * $taxRate, 2);
+            $newTotal = $newSubtotal + $newTax;
+
+            return response()->json([
+                'old_total' => (float)$reservation->total,
+                'new_total' => $newTotal,
+                'difference' => $newTotal - $reservation->total,
+                'nights' => $nights
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json(['error' => $e->getMessage()], 400);
+        }
+    }
+
+    public function updateReservationDates(Request $request, $id)
+    {
+        try {
+            $reservation = Reservation::findOrFail($id);
+            $newCid = Carbon::parse($request->cid);
+            $newCod = Carbon::parse($request->cod);
+            $nights = $newCod->diffInDays($newCid);
+
+            if ($nights <= 0) {
+                return redirect()->back()->with('error', 'Invalid dates selected.');
+            }
+
+            // Calculate new pricing
+            $site = \App\Models\Site::where('siteid', $reservation->siteid)->firstOrFail();
+            $rateTier = \App\Models\RateTier::where('tier', $site->ratetier)->firstOrFail();
+            
+            $newBasePrice = 0;
+            if ($nights < 7) {
+                $newBasePrice = $rateTier->flatrate * $nights;
+            } elseif ($nights == 7) {
+                $newBasePrice = $rateTier->weeklyrate;
+            } else {
+                $extraNights = $nights - 7;
+                $newBasePrice = $rateTier->weeklyrate + ($extraNights * $rateTier->flatrate);
+            }
+
+            $taxRate = $reservation->taxrate ?: 0.0875;
+            $siteLock = (float)($reservation->sitelock ?? 0);
+            
+            $newSubtotal = $newBasePrice + $siteLock;
+            $newTax = round($newSubtotal * $taxRate, 2);
+            $newTotal = $newSubtotal + $newTax;
+
+            $oldState = $reservation->toArray();
+
+            $reservation->cid = $newCid;
+            $reservation->cod = $newCod;
+            $reservation->nights = $nights;
+            $reservation->base = $newBasePrice;
+            $reservation->subtotal = $newSubtotal;
+            $reservation->totaltax = $newTax;
+            $reservation->total = $newTotal;
+            $reservation->save();
+
+            // Log the change
+            app(ReservationLogService::class)->log(
+                $reservation->id,
+                'change_dates',
+                $oldState,
+                $reservation->refresh()->toArray(),
+                "Dates modified via unified modify page: {$request->cid} to {$request->cod}"
+            );
+
+            return redirect()->route('admin.unified-bookings.show', $reservation->group_confirmation_code)
+                ->with('success', 'Reservation updated successfully.');
+
+        } catch (\Exception $e) {
+            return redirect()->back()->with('error', 'Error updating reservation: ' . $e->getMessage());
         }
     }
 }
