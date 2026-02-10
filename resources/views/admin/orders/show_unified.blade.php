@@ -118,7 +118,7 @@
                                     </td>
                                     <td class="text-end">
                                         <div class="btn-group btn-group-sm" role="group">
-                                            <a href="{{ route('admin.reservations.modify', $res->id) }}" 
+                                            <a href="{{ route('admin.reservations.modifyReservation', $res->id) }}" 
                                                class="btn btn-primary" title="Modify">
                                                 <i class="tio-edit me-1"></i> Modify
                                             </a>

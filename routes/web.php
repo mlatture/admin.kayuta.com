@@ -429,6 +429,9 @@ Route::prefix('admin')
             Route::post('move/{id}', [MoneyActionController::class, 'moveSite'])->name('admin.money.move');
             Route::post('change-dates/{id}', [MoneyActionController::class, 'changeDates'])->name('admin.money.change-dates');
             Route::get('modify/{id}', [MoneyActionController::class, 'startModification'])->name('admin.reservations.modify');
+            Route::get('modify-reservation/{id}', [\App\Http\Controllers\AdminReservationController::class, 'modifyReservation'])->name('admin.reservations.modifyReservation');
+            Route::post('modify-reservation/{id}', [\App\Http\Controllers\AdminReservationController::class, 'updateReservationDates'])->name('admin.reservations.updateReservationDates');
+            Route::get('calculate-price/{id}', [\App\Http\Controllers\AdminReservationController::class, 'calculateNewPrice'])->name('admin.reservations.calculatePrice');
             Route::post('refund-single/{id}', [MoneyActionController::class, 'refundSingle'])->name('admin.money.refund-single');
         });
 
