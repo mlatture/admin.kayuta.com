@@ -416,11 +416,22 @@ class OrderController extends Controller
 
         // 3. Refund lines
         $refunds = DB::table('refunds')->whereIn('cartid', $cartIds)->get();
+        
+        // Create a map of reservation IDs to site names for quick lookup
+        $resSiteMap = $reservations->pluck('site', 'id');
+
         foreach ($refunds as $r) {
             if (($r->amount ?? 0) > 0) {
+                $siteLabel = '';
+                if (!empty($r->reservations_id) && isset($resSiteMap[$r->reservations_id])) {
+                    $site = $resSiteMap[$r->reservations_id];
+                    $siteName = $site->sitename ?? $site->siteid ?? 'Site';
+                    $siteLabel = " ({$siteName})";
+                }
+
                 $ledger->push([
                     'date' => $r->created_at,
-                    'description' => 'Refund Issued' . ($r->reason ? ": {$r->reason}" : ''),
+                    'description' => 'Refund Issued' . $siteLabel . ($r->reason ? ": {$r->reason}" : ''),
                     'type' => 'refund',
                     'amount' => (float)$r->amount,
                     'ref' => $r->x_ref_num ?? $r->method,
@@ -445,7 +456,8 @@ class OrderController extends Controller
             'totalPayments',
             'totalRefunds',
             'balanceDue',
-            'ledger'
+            'ledger',
+            'refunds'
         ));
     }
 }

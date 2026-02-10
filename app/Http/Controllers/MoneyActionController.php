@@ -277,57 +277,122 @@ class MoneyActionController extends Controller
         }
     }
 
-    public function refundSingle(Request $request, $id)
-    {
-        $request->validate([
-            'refund_amount' => 'required|numeric|min:0.01',
-            'reason' => 'required|string|max:500',
-            'method' => 'required|in:credit_card,cash,other,account_credit,gift_card',
-        ]);
+public function refundSingle(Request $request, $id)
+{
+    $request->validate([
+        'refund_amount'     => 'required|numeric|min:0.01',
+        'reason'            => 'required|string|max:500',
+        'method'            => 'required|in:credit_card,cash,other,account_credit,gift_card',
+        'cancellation_fee'  => 'nullable|numeric|min:0',
+        'override_reason'   => 'nullable|string|max:500',
+    ]);
 
-        try {
-            $reservation = Reservation::findOrFail($id);
-            $refundAmount = (float) $request->refund_amount;
-            $refundMethod = $request->method;
-            $refundReason = $request->reason;
+    $refundAmount    = (float) $request->refund_amount;
+    $refundMethod    = $request->method;
+    $refundReason    = $request->reason;
+    $cancellationFee = $request->filled('cancellation_fee') ? (float) $request->cancellation_fee : null;
+    $overrideReason  = $request->input('override_reason');
 
-            // Validate refund amount doesn't exceed reservation total
-            if ($refundAmount > $reservation->total) {
+    try {
+        return DB::transaction(function () use (
+            $id,
+            $refundAmount,
+            $refundMethod,
+            $refundReason,
+            $cancellationFee,
+            $overrideReason
+        ) {
+            // Lock reservation to avoid double refund race
+            $reservation = Reservation::query()
+                ->lockForUpdate()
+                ->findOrFail($id);
+
+            if (empty($reservation->payment_id)) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Refund amount cannot exceed reservation total of $' . number_format($reservation->total, 2)
+                    'message' => 'Refund failed: reservation is missing payment_id.',
                 ], 422);
             }
 
-            DB::beginTransaction();
+            // Lock the payment row referenced by this reservation
+            $payment = Payment::query()
+                ->lockForUpdate()
+                ->find($reservation->payment_id);
+
+            if (!$payment) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Refund failed: payment not found for reservation payment_id.',
+                ], 422);
+            }
+
+            // Your payment total column is $payment->payment
+            $paymentChargedAmount = (float) $payment->payment;
+
+            if ($paymentChargedAmount <= 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Refund failed: payment.payment is not valid.',
+                ], 422);
+            }
+
+            // Determine cartid grouping (shared transaction group)
+            $cartid = $payment->cartid ?? $reservation->cartid;
+
+            if (empty($cartid)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Refund failed: cannot determine cartid for shared payment group.',
+                ], 422);
+            }
+
+            // Prevent double refunds on the same reservation
+            $alreadyRefundedForReservation = (float) Refund::where('reservations_id', $reservation->id)->sum('amount');
+            $reservationRefundable = max(0, (float) $reservation->total - $alreadyRefundedForReservation);
+
+            if ($refundAmount > $reservationRefundable) {
+                return response()->json([
+                    'success' => false,
+                    'message' =>
+                        'Refund amount exceeds refundable balance for this reservation. ' .
+                        'Refundable: $' . number_format($reservationRefundable, 2) .
+                        ', already refunded: $' . number_format($alreadyRefundedForReservation, 2) .
+                        ', reservation total: $' . number_format((float) $reservation->total, 2),
+                ], 422);
+            }
+
+            // Prevent exceeding the shared payment capture across all reservations (cartid group)
+            $alreadyRefundedForCart = (float) Refund::where('cartid', $cartid)->sum('amount');
+            $paymentRefundable = max(0, $paymentChargedAmount - $alreadyRefundedForCart);
+
+            if ($refundAmount > $paymentRefundable) {
+                return response()->json([
+                    'success' => false,
+                    'message' =>
+                        'Refund amount exceeds refundable balance on the shared payment. ' .
+                        'Refundable: $' . number_format($paymentRefundable, 2) .
+                        ', already refunded on cart: $' . number_format($alreadyRefundedForCart, 2) .
+                        ', payment charged: $' . number_format($paymentChargedAmount, 2),
+                ], 422);
+            }
 
             $xRefNum = null;
-            $gatewayResponse = null;
 
-            // Handle Credit Card Refund via Cardknox Gateway
+            // Gateway refund only when method is credit_card
             if ($refundMethod === 'credit_card') {
-                // Find original payment with x_ref_num
-                $originalPayment = Payment::where('cartid', $reservation->cartid)
-                    ->whereNotNull('x_ref_num')
-                    ->orderBy('id', 'desc')
-                    ->first();
-
-                if (!$originalPayment || !$originalPayment->x_ref_num) {
-                    DB::rollBack();
+                if (empty($payment->x_ref_num)) {
                     return response()->json([
                         'success' => false,
-                        'message' => 'Cannot process credit card refund: No original payment reference found. Please use a different refund method.'
+                        'message' => 'Cannot process credit card refund: no x_ref_num on payment. Use another method.',
                     ], 422);
                 }
 
-                // Call Cardknox Refund API
-                $apiKey = config('services.cardknox.api_key');
                 $postData = [
-                    'xKey'             => $apiKey,
+                    'xKey'             => config('services.cardknox.api_key'),
                     'xVersion'         => '4.5.5',
                     'xCommand'         => 'cc:Refund',
                     'xAmount'          => number_format($refundAmount, 2, '.', ''),
-                    'xRefNum'          => $originalPayment->x_ref_num,
+                    'xRefNum'          => $payment->x_ref_num,
                     'xSoftwareVersion' => '1.0',
                     'xSoftwareName'    => 'KayutaLake',
                     'xInvoice'         => 'REFUND-' . $reservation->id . '-' . time(),
@@ -340,73 +405,77 @@ class MoneyActionController extends Controller
                     'Content-type: application/x-www-form-urlencoded',
                     'X-Recurring-Api-Version: 1.0',
                 ]);
-                
-                $response = curl_exec($ch);
-                
-                if ($response === false) {
+
+                $raw = curl_exec($ch);
+                if ($raw === false) {
                     $error = curl_error($ch);
                     curl_close($ch);
-                    DB::rollBack();
-                    throw new \Exception("Payment gateway connection failed: " . $error);
+                    throw new \Exception('Payment gateway connection failed: ' . $error);
                 }
-                
                 curl_close($ch);
-                parse_str($response, $gatewayResponse);
 
-                // Validate gateway response
+                parse_str($raw, $gatewayResponse);
+
                 if (($gatewayResponse['xStatus'] ?? '') !== 'Approved') {
-                    DB::rollBack();
                     return response()->json([
                         'success' => false,
-                        'message' => 'Gateway refund failed: ' . ($gatewayResponse['xError'] ?? 'Transaction declined')
+                        'message' => 'Gateway refund failed: ' . ($gatewayResponse['xError'] ?? 'Transaction declined'),
                     ], 422);
                 }
 
                 $xRefNum = $gatewayResponse['xRefNum'] ?? null;
             }
 
-            // Create Refund Record
+            // Create Refund record (matches your refunds table)
             Refund::create([
-                'cartid' => $reservation->cartid,
-                'amount' => $refundAmount,
-                'method' => ucfirst(str_replace('_', ' ', $refundMethod)),
-                'reason' => $refundReason,
-                'x_ref_num' => $xRefNum,
-                'created_by' => auth()->id() ?? 0,
-                'reservations_id' => $reservation->id
+                'cartid'           => $cartid,
+                'amount'           => $refundAmount,
+                'cancellation_fee' => $cancellationFee,
+                'reservations_id'  => $reservation->id,
+                'reason'           => $refundReason,
+                'override_reason'  => $overrideReason,
+                'created_by'       => auth()->user()->name ?? 'System',
+                'method'           => $refundMethod,
+                'x_ref_num'        => $xRefNum,
             ]);
 
-            // Update reservation status to Cancelled
-            $reservation->update([
-                'status' => 'Cancelled',
-                'reason' => 'Refunded: ' . $refundReason
-            ]);
+            // Cancel reservation only if fully refunded
+            $newRefundedForReservation = $alreadyRefundedForReservation + $refundAmount;
+            $isFullyRefunded = $newRefundedForReservation >= ((float) $reservation->total - 0.00001);
 
-            // Log the action
-            ReservationLogService::log(
-                $reservation->id,
-                'refund_processed',
-                "Refund of $" . number_format($refundAmount, 2) . " processed. Reason: {$refundReason}",
-                auth()->id()
-            );
-
-            DB::commit();
+            if ($isFullyRefunded) {
+                $reservation->update([
+                    'status' => 'Cancelled',
+                    'reason' => 'Refunded: ' . $refundReason,
+                ]);
+            }
 
             return response()->json([
                 'success' => true,
                 'message' => 'Refund of $' . number_format($refundAmount, 2) . ' processed successfully.',
                 'refund_amount' => $refundAmount,
-                'gateway_ref' => $xRefNum
+                'reservation_id' => $reservation->id,
+                'payment_id' => $payment->id,
+                'cartid' => $cartid,
+                'gateway_ref' => $xRefNum,
+                'reservation_refundable_before' => $reservationRefundable,
+                'payment_refundable_before' => $paymentRefundable,
+                'refunded_on_cart_total_after' => $alreadyRefundedForCart + $refundAmount,
+                'payment_charged_amount' => $paymentChargedAmount,
             ]);
+        });
 
-        } catch (\Exception $e) {
-            DB::rollBack();
-            Log::error("Refund failed for reservation {$id}: " . $e->getMessage());
-            
-            return response()->json([
-                'success' => false,
-                'message' => 'Refund failed: ' . $e->getMessage()
-            ], 422);
-        }
+    } catch (\Exception $e) {
+        DB::rollBack();
+        Log::error("Refund failed for reservation {$id}: " . $e->getMessage());
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Refund failed: ' . $e->getMessage(),
+        ], 422);
     }
+}
+
+
+
 }
