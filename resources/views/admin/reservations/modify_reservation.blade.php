@@ -212,17 +212,20 @@ $(document).ready(function() {
                 $('#new-total').text('$' + data.new_total.toFixed(2));
                 $('#new-nights').text(data.nights + ' nights');
                 
-                const diff = data.difference;
                 const diffEl = $('#price-diff');
                 const diffCont = $('#diff-container');
+                const diffLabel = diffCont.find('.small.text-muted');
 
-                if (diff > 0) {
-                    diffEl.text('+$' + diff.toFixed(2)).removeClass('text-success text-muted').addClass('text-danger');
+                if (data.type === 'UPCHARGE') {
+                    diffLabel.text('Amount to Pay:');
+                    diffEl.text('+$' + data.amount_to_pay.toFixed(2)).removeClass('text-success text-muted').addClass('text-danger');
                     diffCont.removeClass('bg-light bg-soft-success').addClass('bg-soft-danger');
-                } else if (diff < 0) {
-                    diffEl.text('-$' + Math.abs(diff).toFixed(2)).removeClass('text-danger text-muted').addClass('text-success');
+                } else if (data.type === 'REFUND') {
+                    diffLabel.text('Refund Amount:');
+                    diffEl.text('-$' + data.refund_amount.toFixed(2)).removeClass('text-danger text-muted').addClass('text-success');
                     diffCont.removeClass('bg-light bg-soft-danger').addClass('bg-soft-success');
                 } else {
+                    diffLabel.text('Difference:');
                     diffEl.text('$0.00').removeClass('text-danger text-success').addClass('text-muted');
                     diffCont.removeClass('bg-soft-danger bg-soft-success').addClass('bg-light');
                 }
