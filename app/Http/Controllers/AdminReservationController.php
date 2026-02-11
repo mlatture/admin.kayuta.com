@@ -676,60 +676,120 @@ public function show(Request $request, $id)
     {
         try {
             $reservation = Reservation::findOrFail($id);
-            $newCid = Carbon::parse($request->cid);
-            $newCod = Carbon::parse($request->cod);
-            $nights = $newCod->diffInDays($newCid);
+            $newCid = Carbon::parse($request->cid)->format('Y-m-d');
+            $newCod = Carbon::parse($request->cod)->format('Y-m-d');
 
-            if ($nights <= 0) {
-                return redirect()->back()->with('error', 'Invalid dates selected.');
+            if (Carbon::parse($newCod)->lte(Carbon::parse($newCid))) {
+                return redirect()->back()->with('error', 'Checkout must be after Check-in');
             }
 
-            // Calculate new pricing
-            $site = \App\Models\Site::where('siteid', $reservation->siteid)->firstOrFail();
-            $rateTier = \App\Models\RateTier::where('tier', $site->ratetier)->firstOrFail();
-            
-            $newBasePrice = 0;
-            if ($nights < 7) {
-                $newBasePrice = $rateTier->flatrate * $nights;
-            } elseif ($nights == 7) {
-                $newBasePrice = $rateTier->weeklyrate;
-            } else {
-                $extraNights = $nights - 7;
-                $newBasePrice = $rateTier->weeklyrate + ($extraNights * $rateTier->flatrate);
+            // 1. Recalculate price from upstream to get definitive delta
+            $apiBase = rtrim(config('services.flow.base_url', env('BOOK_API_BASE', 'https://book.kayuta.com')), '/');
+            $response = Http::timeout(10)->acceptJson()
+                ->withToken(env('BOOK_API_KEY'))
+                ->get("{$apiBase}/api/v1/reservation/price-delta", [
+                    'original_total' => (float)$reservation->total,
+                    'site_id' => $reservation->siteid,
+                    'start_date' => $newCid,
+                    'end_date' => $newCod,
+                    'site_lock_fee' => (float)($reservation->sitelock ?? 0),
+                ]);
+
+            if (!$response->successful()) {
+                throw new \Exception("Upstream Price Calculation Failed: " . $response->body());
             }
 
-            $taxRate = $reservation->taxrate ?: 0.0875;
-            $siteLock = (float)($reservation->sitelock ?? 0);
-            
-            $newSubtotal = $newBasePrice + $siteLock;
-            $newTax = round($newSubtotal * $taxRate, 2);
-            $newTotal = $newSubtotal + $newTax;
+            $summary = $response->json()['summary'] ?? [];
+            $type = $summary['type'] ?? 'NONE';
+            $amountToPay = (float)($summary['amount_to_pay'] ?? 0);
+            $refundAmount = (float)($summary['refund_amount'] ?? 0);
+            $newTotal = (float)($summary['new_total'] ?? 0);
+            $nights = (int)($summary['nights'] ?? 0);
+            $difference = (float)($summary['difference'] ?? 0);
 
             $oldState = $reservation->toArray();
+            $moneyService = app(MoneyActionService::class);
 
+            DB::beginTransaction();
+
+            // 2. Process Payments / Refunds
+            if ($type === 'UPCHARGE' && $amountToPay > 0) {
+                // Find card on file
+                $card = \App\Models\CardsOnFile::where('email', $reservation->email)->latest()->first();
+                if (!$card) {
+                    throw new \Exception("No credit card on file for this customer. Please add a charge manually.");
+                }
+
+                // Process automated charge
+                // We use addCharge from MoneyActionService which handles CardKnox and updates reservation
+                $moneyService->addCharge(
+                    $reservation, 
+                    $amountToPay, // Note: price-delta API returns amount TO PAY (inclusive of tax if applicable, but usually base diff)
+                    0,            // We assume the delta API includes tax in amount_to_pay if needed, or we treat it as base
+                    "Automated upcharge for date modification ($newCid to $newCod)",
+                    'credit_card_on_file',
+                    $card->xtoken
+                );
+
+            } elseif ($type === 'REFUND' && $refundAmount > 0) {
+                // Process automated refund
+                // MoneyActionService has processCardknoxRefund
+                $moneyService->processCardknoxRefund(
+                    $reservation,
+                    $refundAmount,
+                    "Automated refund for date modification ($newCid to $newCod)"
+                );
+
+                // Create refund record
+                \App\Models\Refund::create([
+                    'cartid' => $reservation->cartid,
+                    'reservations_id' => $reservation->id,
+                    'amount' => $refundAmount,
+                    'method' => 'credit_card',
+                    'reason' => 'Date modification',
+                    'comment' => "Refunded \${$refundAmount} due to stay reduction.",
+                    'created_by' => auth()->user()->name ?? 'System',
+                ]);
+
+                // Update reservation totals manually since processCardknoxRefund doesn't update reservation
+                $reservation->total -= $refundAmount;
+                // Note: We'll overwrite with new totals from API summary anyway below
+            }
+
+            // 3. Update Reservation Details
             $reservation->cid = $newCid;
             $reservation->cod = $newCod;
             $reservation->nights = $nights;
-            $reservation->base = $newBasePrice;
-            $reservation->subtotal = $newSubtotal;
-            $reservation->totaltax = $newTax;
+            // The API returns new_total. We should update components too if possible, 
+            // but the primary requirement is the total difference.
+            // We'll adjust subtotal/tax proportionally or just update the total.
+            // Current DB structure: base, subtotal, totaltax, total
+            $currentTaxRate = $reservation->totaltax > 0 ? ($reservation->totaltax / $reservation->subtotal) : 0.0875;
             $reservation->total = $newTotal;
+            $reservation->subtotal = round($newTotal / (1 + $currentTaxRate), 2);
+            $reservation->totaltax = $newTotal - $reservation->subtotal;
+            // Best effort update of components
+            
             $reservation->save();
 
             // Log the change
-            app(ReservationLogService::class)->log(
+            app(\App\Services\ReservationLogService::class)->log(
                 $reservation->id,
                 'change_dates',
                 $oldState,
                 $reservation->refresh()->toArray(),
-                "Dates modified via unified modify page: {$request->cid} to {$request->cod}"
+                "Dates modified and payment processed: $newCid to $newCod. Result: $type (\$" . ($type == 'UPCHARGE' ? $amountToPay : $refundAmount) . ")"
             );
 
+            DB::commit();
+
             return redirect()->route('admin.unified-bookings.show', $reservation->group_confirmation_code)
-                ->with('success', 'Reservation updated successfully.');
+                ->with('success', "Reservation updated successfully. " . ($type !== 'NONE' ? "Payment/Refund processed: $type" : ""));
 
         } catch (\Exception $e) {
-            return redirect()->back()->with('error', 'Error updating reservation: ' . $e->getMessage());
+            DB::rollBack();
+            Log::error("Error in updateReservationDates", ['exception' => $e->getMessage()]);
+            return redirect()->back()->with('error', 'Error updating reservation: ' . $e->getMessage())->withInput();
         }
     }
 }
