@@ -625,45 +625,49 @@ public function show(Request $request, $id)
     {
         try {
             $reservation = Reservation::findOrFail($id);
-            $newCid = Carbon::parse($request->cid);
-            $newCod = Carbon::parse($request->cod);
+            $newCid = Carbon::parse($request->cid)->format('Y-m-d');
+            $newCod = Carbon::parse($request->cod)->format('Y-m-d');
 
-            if ($newCod->lte($newCid)) {
+            if (Carbon::parse($newCod)->lte(Carbon::parse($newCid))) {
                 return response()->json(['error' => 'Checkout must be after Check-in'], 422);
             }
 
-            $service = app(MoneyActionService::class);
+            $apiBase = rtrim(config('services.flow.base_url', env('BOOK_API_BASE', 'https://book.kayuta.com')), '/');
             
-            // Reflected pricing logic from MoneyActionService calculatePriceForDates/applyNightsPricing
-            $site = \App\Models\Site::where('siteid', $reservation->siteid)->firstOrFail();
-            $rateTier = \App\Models\RateTier::where('tier', $site->ratetier)->firstOrFail();
-            $nights = $newCod->diffInDays($newCid);
+            $response = Http::timeout(10)->acceptJson()
+                ->withToken(env('BOOK_API_KEY'))
+                ->get("{$apiBase}/api/v1/reservation/price-delta", [
+                    'original_total' => (float)$reservation->total,
+                    'site_id' => $reservation->siteid,
+                    'start_date' => $newCid,
+                    'end_date' => $newCod,
+                    'site_lock_fee' => (float)($reservation->sitelock ?? 0),
+                ]);
 
-            $newBasePrice = 0;
-            if ($nights < 7) {
-                $newBasePrice = $rateTier->flatrate * $nights;
-            } elseif ($nights == 7) {
-                $newBasePrice = $rateTier->weeklyrate;
-            } else {
-                $extraNights = $nights - 7;
-                $newBasePrice = $rateTier->weeklyrate + ($extraNights * $rateTier->flatrate);
+            if (!$response->successful()) {
+                Log::error("Price Delta API Failed", [
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                    'reservation_id' => $id
+                ]);
+                return response()->json(['error' => 'Unable to calculate price from upstream.'], 400);
             }
 
-            $taxRate = $reservation->taxrate ?: 0.0875;
-            $siteLock = (float)($reservation->sitelock ?? 0);
-            
-            $newSubtotal = $newBasePrice + $siteLock;
-            $newTax = round($newSubtotal * $taxRate, 2);
-            $newTotal = $newSubtotal + $newTax;
+            $data = $response->json();
+            $summary = $data['summary'] ?? [];
 
             return response()->json([
                 'old_total' => (float)$reservation->total,
-                'new_total' => $newTotal,
-                'difference' => $newTotal - $reservation->total,
-                'nights' => $nights
+                'new_total' => (float)($summary['new_total'] ?? 0),
+                'difference' => (float)($summary['difference'] ?? 0),
+                'nights' => (int)($summary['nights'] ?? 0),
+                'type' => $summary['type'] ?? 'NONE',
+                'refund_amount' => (float)($summary['refund_amount'] ?? 0),
+                'amount_to_pay' => (float)($summary['amount_to_pay'] ?? 0),
             ]);
 
         } catch (\Exception $e) {
+            Log::error("Error in calculateNewPrice", ['exception' => $e->getMessage()]);
             return response()->json(['error' => $e->getMessage()], 400);
         }
     }
