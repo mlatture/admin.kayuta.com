@@ -621,6 +621,12 @@ public function show(Request $request, $id)
     public function modifyReservation($id)
     {
         $reservation = Reservation::with(['site', 'user'])->findOrFail($id);
+
+        if ($reservation->status === 'Cancelled') {
+            return redirect()->route('admin.unified-bookings.show', $reservation->group_confirmation_code)
+                ->with('error', 'Cancelled reservations cannot be modified.');
+        }
+
         return view('admin.reservations.modify_reservation', compact('reservation'));
     }
 
@@ -628,6 +634,11 @@ public function show(Request $request, $id)
     {
         try {
             $reservation = Reservation::findOrFail($id);
+
+            if ($reservation->status === 'Cancelled') {
+                return response()->json(['error' => 'Cancelled reservations cannot be modified.'], 403);
+            }
+
             $newCid = Carbon::parse($request->cid)->format('Y-m-d');
             $newCod = Carbon::parse($request->cod)->format('Y-m-d');
 
@@ -637,8 +648,9 @@ public function show(Request $request, $id)
 
             $apiBase = rtrim(config('services.flow.base_url', env('BOOK_API_BASE', 'https://book.kayuta.com')), '/');
             
+            // dd($apiBase,env('BOOKING_BEARER_KEY'));
             $response = Http::timeout(10)->acceptJson()
-                ->withToken(env('BOOK_API_KEY'))
+                ->withToken(env('BOOKING_BEARER_KEY'))
                 ->get("{$apiBase}/api/v1/reservation/price-delta", [
                     'original_total' => (float)$reservation->total,
                     'site_id' => $reservation->siteid,
@@ -679,6 +691,12 @@ public function show(Request $request, $id)
     {
         try {
             $reservation = Reservation::findOrFail($id);
+
+            if ($reservation->status === 'Cancelled') {
+                return redirect()->route('admin.unified-bookings.show', $reservation->group_confirmation_code)
+                    ->with('error', 'Cancelled reservations cannot be modified.');
+            }
+
             $newCid = Carbon::parse($request->cid)->format('Y-m-d');
             $newCod = Carbon::parse($request->cod)->format('Y-m-d');
 
@@ -689,7 +707,7 @@ public function show(Request $request, $id)
             // 1. Recalculate price from upstream to get definitive delta
             $apiBase = rtrim(config('services.flow.base_url', env('BOOK_API_BASE', 'https://book.kayuta.com')), '/');
             $response = Http::timeout(10)->acceptJson()
-                ->withToken(env('BOOK_API_KEY'))
+                ->withToken(env('BOOKING_BEARER_KEY'))
                 ->get("{$apiBase}/api/v1/reservation/price-delta", [
                     'original_total' => (float)$reservation->total,
                     'site_id' => $reservation->siteid,
