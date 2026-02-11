@@ -81,8 +81,8 @@
                 <div class="card-body">
                     <form action="{{ route('admin.reservations.updateReservationDates', $reservation->id) }}" method="POST" id="modifyForm">
                         @csrf
-                        <div class="row">
-                            <div class="col-md-6 mb-3">
+                        <div class="row align-items-center">
+                            <div class="col-md-5 mb-3">
                                 <label class="form-label">Check-In Date</label>
                                 <div class="input-group input-group-merge">
                                     <div class="input-group-prepend">
@@ -92,7 +92,7 @@
                                            value="{{ \Carbon\Carbon::parse($reservation->cid)->format('Y-m-d') }}" required>
                                 </div>
                             </div>
-                            <div class="col-md-6 mb-3">
+                            <div class="col-md-5 mb-3">
                                 <label class="form-label">Check-Out Date</label>
                                 <div class="input-group input-group-merge">
                                     <div class="input-group-prepend">
@@ -102,12 +102,17 @@
                                            value="{{ \Carbon\Carbon::parse($reservation->cod)->format('Y-m-d') }}" required>
                                 </div>
                             </div>
+                            <div class="col-md-2 mb-3 mt-md-4">
+                                <button type="button" id="fetchPricesBtn" class="btn btn-outline-primary w-100">
+                                    <i class="tio-refresh"></i> Fetch
+                                </button>
+                            </div>
                         </div>
 
                         <div class="alert alert-soft-info d-flex align-items-center mb-0" role="alert">
                             <i class="tio-info-outined me-2"></i>
                             <div>
-                                Extend or reduce the stay. The total price will update automatically on the right.
+                                Click <strong>Fetch</strong> to see the price adjustment before saving.
                             </div>
                         </div>
 
@@ -115,7 +120,7 @@
 
                         <div class="d-flex justify-content-end">
                             <a href="{{ route('admin.unified-bookings.show', $reservation->group_confirmation_code) }}" class="btn btn-white me-2">Cancel</a>
-                            <button type="submit" class="btn btn-primary" id="saveBtn">Save Changes</button>
+                            <button type="submit" class="btn btn-primary" id="saveBtn" disabled>Save Changes</button>
                         </div>
                     </form>
                 </div>
@@ -149,20 +154,26 @@
                         <p class="text-muted small mt-2">Calculating new price...</p>
                     </div>
 
-                    <div id="new-price-container">
+                    <div id="new-price-container" class="d-none">
                         <div class="d-flex justify-content-between mb-2">
                             <span class="text-muted">New Total:</span>
-                            <span class="fw-bold h4 mb-0" id="new-total">${{ number_format($reservation->total, 2) }}</span>
+                            <span class="fw-bold h4 mb-0" id="new-total">$0.00</span>
                         </div>
                         <div class="d-flex justify-content-between mb-3">
                             <span class="text-muted">New Nights:</span>
-                            <span id="new-nights">{{ $reservation->nights }} nights</span>
+                            <span id="new-nights">0 nights</span>
                         </div>
 
                         <div class="p-3 rounded-pill bg-light d-flex justify-content-between align-items-center" id="diff-container">
                             <span class="small text-muted">Difference:</span>
                             <span class="fw-bold" id="price-diff">$0.00</span>
                         </div>
+
+                        <div id="payment-status-hint" class="mt-3 small text-center fw-semibold"></div>
+                    </div>
+
+                    <div id="fetch-prompt" class="text-center py-4">
+                        <p class="text-muted small mb-0">Select dates and click Fetch to calculate the difference.</p>
                     </div>
 
                     <div id="date-error" class="alert alert-soft-danger small mt-3 d-none">
@@ -172,7 +183,7 @@
                 </div>
                 <div class="card-footer bg-light border-0">
                     <p class="small text-muted mb-0">
-                        <i class="tio-info-outined me-1"></i> Changes will be logged for financial audit.
+                        <i class="tio-info-outined me-1"></i> Changes will process payments or refunds automatically.
                     </p>
                 </div>
             </div>
@@ -187,11 +198,21 @@
 $(document).ready(function() {
     const cidInput = $('#cid');
     const codInput = $('#cod');
+    const fetchBtn = $('#fetchPricesBtn');
     const saveBtn = $('#saveBtn');
     const spinner = $('#price-update-spinner');
     const container = $('#new-price-container');
+    const prompt = $('#fetch-prompt');
     const errorDiv = $('#date-error');
     const errorMsg = $('#error-message');
+    const statusHint = $('#payment-status-hint');
+
+    function resetSummary() {
+        container.addClass('d-none');
+        prompt.removeClass('d-none');
+        saveBtn.prop('disabled', true);
+        errorDiv.addClass('d-none');
+    }
 
     function calculatePrice() {
         const cid = cidInput.val();
@@ -200,7 +221,8 @@ $(document).ready(function() {
         if (!cid || !cod) return;
 
         spinner.removeClass('d-none');
-        container.addClass('opacity-50');
+        prompt.addClass('d-none');
+        container.addClass('d-none');
         errorDiv.addClass('d-none');
         saveBtn.prop('disabled', true);
 
@@ -209,6 +231,7 @@ $(document).ready(function() {
             method: "GET",
             data: { cid, cod },
             success: function(data) {
+                container.removeClass('d-none');
                 $('#new-total').text('$' + data.new_total.toFixed(2));
                 $('#new-nights').text(data.nights + ' nights');
                 
@@ -216,18 +239,23 @@ $(document).ready(function() {
                 const diffCont = $('#diff-container');
                 const diffLabel = diffCont.find('.small.text-muted');
 
+                statusHint.removeClass('text-danger text-success').text('');
+
                 if (data.type === 'UPCHARGE') {
                     diffLabel.text('Amount to Pay:');
                     diffEl.text('+$' + data.amount_to_pay.toFixed(2)).removeClass('text-success text-muted').addClass('text-danger');
                     diffCont.removeClass('bg-light bg-soft-success').addClass('bg-soft-danger');
+                    statusHint.addClass('text-danger').text('Customer will be charged automatically.');
                 } else if (data.type === 'REFUND') {
                     diffLabel.text('Refund Amount:');
                     diffEl.text('-$' + data.refund_amount.toFixed(2)).removeClass('text-danger text-muted').addClass('text-success');
                     diffCont.removeClass('bg-light bg-soft-danger').addClass('bg-soft-success');
+                    statusHint.addClass('text-success').text('Refund will be processed automatically.');
                 } else {
                     diffLabel.text('Difference:');
                     diffEl.text('$0.00').removeClass('text-danger text-success').addClass('text-muted');
                     diffCont.removeClass('bg-soft-danger bg-soft-success').addClass('bg-light');
+                    statusHint.text('No price change.');
                 }
 
                 saveBtn.prop('disabled', false);
@@ -235,16 +263,17 @@ $(document).ready(function() {
             error: function(xhr) {
                 errorMsg.text(xhr.responseJSON?.error || 'Invalid date range');
                 errorDiv.removeClass('d-none');
+                prompt.removeClass('d-none');
             },
             complete: function() {
                 spinner.addClass('d-none');
-                container.removeClass('opacity-50');
             }
         });
     }
 
-    cidInput.on('change', calculatePrice);
-    codInput.on('change', calculatePrice);
+    fetchBtn.on('click', calculatePrice);
+    cidInput.on('change', resetSummary);
+    codInput.on('change', resetSummary);
 });
 </script>
 @endsection
