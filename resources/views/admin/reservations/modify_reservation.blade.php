@@ -193,9 +193,10 @@
 
 @endsection
 
-@section('javascript')
+@section('js')
 <script>
 $(document).ready(function() {
+    console.log("Modify Reservation JS Loaded");
     const cidInput = $('#cid');
     const codInput = $('#cod');
     const fetchBtn = $('#fetchPricesBtn');
@@ -208,6 +209,7 @@ $(document).ready(function() {
     const statusHint = $('#payment-status-hint');
 
     function resetSummary() {
+        console.log("Resetting summary");
         container.addClass('d-none');
         prompt.removeClass('d-none');
         saveBtn.prop('disabled', true);
@@ -215,8 +217,11 @@ $(document).ready(function() {
     }
 
     function calculatePrice() {
+        console.log("Calculate price triggered");
         const cid = cidInput.val();
         const cod = codInput.val();
+
+        console.log("Dates:", cid, cod);
 
         if (!cid || !cod) return;
 
@@ -231,6 +236,7 @@ $(document).ready(function() {
             method: "GET",
             data: { cid, cod },
             success: function(data) {
+                console.log("API Success:", data);
                 container.removeClass('d-none');
                 $('#new-total').text('$' + data.new_total.toFixed(2));
                 $('#new-nights').text(data.nights + ' nights');
@@ -261,6 +267,7 @@ $(document).ready(function() {
                 saveBtn.prop('disabled', false);
             },
             error: function(xhr) {
+                console.error("API Error:", xhr);
                 errorMsg.text(xhr.responseJSON?.error || 'Invalid date range');
                 errorDiv.removeClass('d-none');
                 prompt.removeClass('d-none');
@@ -271,7 +278,11 @@ $(document).ready(function() {
         });
     }
 
-    fetchBtn.on('click', calculatePrice);
+    fetchBtn.on('click', function(e) {
+        console.log("Fetch button clicked");
+        calculatePrice();
+    });
+
     cidInput.on('change', resetSummary);
     codInput.on('change', resetSummary);
 });
