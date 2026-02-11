@@ -118,10 +118,12 @@
                                     </td>
                                     <td class="text-end">
                                         <div class="btn-group btn-group-sm" role="group">
+                                            @if($res->status !== 'Cancelled')
                                             <a href="{{ route('admin.reservations.modifyReservation', $res->id) }}" 
                                                class="btn btn-primary" title="Modify">
                                                 <i class="tio-edit me-1"></i> Modify
                                             </a>
+                                            @endif
                                             @if($res->status !== 'Cancelled')
                                             <button type="button" class="btn btn-danger" 
                                                     onclick="refundReservation({{ $res->id }}, {{ $res->total }})" 
