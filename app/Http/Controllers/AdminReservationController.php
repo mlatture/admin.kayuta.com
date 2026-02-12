@@ -648,7 +648,6 @@ public function show(Request $request, $id)
 
             $apiBase = rtrim(config('services.flow.base_url', env('BOOK_API_BASE', 'https://book.kayuta.com')), '/');
             
-            // dd($apiBase,env('BOOKING_BEARER_KEY'));
             $response = Http::timeout(10)->acceptJson()
                 ->withToken(env('BOOKING_BEARER_KEY'))
                 ->get("{$apiBase}/api/v1/reservation/price-delta", [

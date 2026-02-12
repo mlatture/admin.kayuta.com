@@ -66,6 +66,38 @@ Route::get('/', function () {
     return redirect('/admin');
 });
 
+// Deploy endpoint
+Route::match(['get', 'post'], '/deploy', function (\Illuminate\Http\Request $request) {
+    $key = config('services.deploy.key', env('DEPLOY_KEY'));
+    if (!$key || $request->query('key') !== $key) {
+        return response('Unauthorized', 403);
+    }
+
+    $output = [];
+    $projectRoot = base_path();
+
+    // Git pull
+    exec("cd {$projectRoot} && git fetch origin main 2>&1", $output);
+    exec("cd {$projectRoot} && git reset --hard origin/main 2>&1", $output);
+
+    // Composer (try composer2 first, fall back to composer)
+    exec("cd {$projectRoot} && composer2 install --no-dev --no-interaction 2>&1 || composer install --no-dev --no-interaction 2>&1", $output);
+
+    // Migrate
+    exec("cd {$projectRoot} && php artisan migrate --force 2>&1", $output);
+
+    // Cache
+    exec("cd {$projectRoot} && php artisan config:clear 2>&1", $output);
+    exec("cd {$projectRoot} && php artisan route:clear 2>&1", $output);
+    exec("cd {$projectRoot} && php artisan view:clear 2>&1", $output);
+
+    return response()->json([
+        'status' => 'ok',
+        'output' => implode("\n", $output),
+        'timestamp' => now()->toIso8601String(),
+    ]);
+});
+
 Auth::routes();
 
     Route::get('auth/{provider}/callback', [SocialAuthController::class,'callback'])

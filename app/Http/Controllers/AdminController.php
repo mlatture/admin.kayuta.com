@@ -18,7 +18,7 @@ class AdminController extends Controller
 
         foreach ($admins as $admin) {
             if (!$admin->relationLoaded('role')) {
-                dd('Role not loaded', $admin);
+                \Illuminate\Support\Facades\Log::warning('Role not loaded for admin', ['admin_id' => $admin->id]);
             }
         }
 
