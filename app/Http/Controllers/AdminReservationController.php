@@ -734,10 +734,21 @@ public function show(Request $request, $id)
 
             // 2. Process Payments / Refunds
             if ($type === 'UPCHARGE' && $amountToPay > 0) {
-                // Find card on file
-                $card = \App\Models\CardsOnFile::where('email', $reservation->email)->latest()->first();
+                // Find card on file (Prefer customernumber, fallback to email)
+                $card = \App\Models\CardsOnFile::where('customernumber', $reservation->customernumber)
+                    ->whereNotNull('xtoken')
+                    ->latest()
+                    ->first();
+                
                 if (!$card) {
-                    throw new \Exception("No credit card on file for this customer. Please add a charge manually.");
+                    $card = \App\Models\CardsOnFile::where('email', $reservation->email)
+                        ->whereNotNull('xtoken')
+                        ->latest()
+                        ->first();
+                }
+
+                if (!$card) {
+                    throw new \Exception("No credit card token on file for this customer. Please add a charge manually.");
                 }
 
                 // Process automated charge

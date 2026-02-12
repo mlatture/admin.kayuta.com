@@ -287,7 +287,19 @@ class MoneyActionService
 
     public function processCardknoxRefund(Reservation $reservation, float $amount, string $reason)
     {
-        $payment = Payment::where('cartid', $reservation->cartid)->whereNotNull('x_ref_num')->latest()->first();
+        // 1. Try finding payment directly by payment_id
+        $payment = null;
+        if (!empty($reservation->payment_id)) {
+            $payment = Payment::where('id', $reservation->payment_id)->whereNotNull('x_ref_num')->first();
+        }
+
+        // 2. Fallback to latest payment in cart if not found
+        if (!$payment) {
+            $payment = Payment::where('cartid', $reservation->cartid)
+                ->whereNotNull('x_ref_num')
+                ->latest()
+                ->first();
+        }
 
         if (!$payment) {
             throw new \Exception("Original credit card transaction reference (xRefNum) not found.");
