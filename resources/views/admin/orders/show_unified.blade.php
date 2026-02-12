@@ -150,14 +150,15 @@
                 </div>
                 <div class="card-body p-0">
                     <div class="table-responsive">
-                        <table class="table table-sm table-borderless table-nowrap mb-0 ledger-table">
+                        <table class="table table-sm table-hover table-borderless table-nowrap mb-0 ledger-table">
                             <thead class="thead-light">
                                 <tr>
                                     <th>Date</th>
                                     <th>Description</th>
+                                    <th>Status</th>
                                     <th class="text-end">Charges</th>
                                     <th class="text-end">Payments</th>
-                                    <th>Reference</th>
+                                    <th class="text-end">Ref / Balance</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -168,6 +169,10 @@
                                         $isCharge = $entry['type'] === 'charge';
                                         $isPayment = $entry['type'] === 'payment';
                                         $isRefund = $entry['type'] === 'refund';
+                                        $statusClass = 'secondary';
+                                        if ($isPayment) $statusClass = 'success';
+                                        if ($isRefund) $statusClass = 'warning';
+                                        if ($isCharge) $statusClass = 'primary';
                                     @endphp
                                     <tr class="{{ $isPayment ? 'table-success-soft' : ($isRefund ? 'table-warning-soft' : '') }}">
                                         <td class="text-nowrap">
@@ -181,7 +186,12 @@
                                             @else
                                                 <i class="tio-add-circle text-primary me-1"></i>
                                             @endif
-                                            {{ $entry['description'] }}
+                                            <span class="text-dark">{{ $entry['description'] }}</span>
+                                        </td>
+                                        <td>
+                                            <span class="badge bg-soft-{{ $statusClass }} text-{{ $statusClass }} text-uppercase" style="font-size: 0.7rem;">
+                                                {{ $entry['status'] ?? ($isCharge ? 'Applied' : 'Processed') }}
+                                            </span>
                                         </td>
                                         <td class="text-end">
                                             @if($isCharge)
@@ -192,14 +202,19 @@
                                         </td>
                                         <td class="text-end">
                                             @if($isPayment)
-                                                <span class="text-success fw-semibold">${{ number_format(abs($entry['amount']), 2) }}</span>
+                                                <span class="text-success fw-semibold">-${{ number_format(abs($entry['amount']), 2) }}</span>
                                             @elseif($isRefund)
-                                                <span class="text-warning fw-semibold">${{ number_format($entry['amount'], 2) }}</span>
+                                                <span class="text-warning fw-semibold">+${{ number_format($entry['amount'], 2) }}</span>
                                             @else
                                                 <span class="text-muted">—</span>
                                             @endif
                                         </td>
-                                        <td class="text-muted small">{{ $entry['ref'] ?? '—' }}</td>
+                                        <td class="text-end">
+                                            <div class="d-flex flex-column align-items-end">
+                                                <span class="text-muted small mb-0">{{ $entry['ref'] ?? '—' }}</span>
+                                                <span class="fw-bold text-dark">${{ number_format($runningBalance, 2) }}</span>
+                                            </div>
+                                        </td>
                                     </tr>
                                 @endforeach
                             </tbody>
