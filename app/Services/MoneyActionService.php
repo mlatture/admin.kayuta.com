@@ -45,7 +45,10 @@ class MoneyActionService
                 }
                 
                 // Use CardKnoxService to process sale
-                $response = $this->gateway->saveSale($token, '000', $totalAmount, $reservation->fname . ' ' . $reservation->lname, $reservation->email);
+                $customerName = trim(($reservation->fname ?? '') . ' ' . ($reservation->lname ?? '')) ?: 'Guest';
+                $customerEmail = (string)($reservation->email ?? 'no-email@kayuta.com');
+
+                $response = $this->gateway->saveSale($token, '000', $totalAmount, $customerName, $customerEmail);
                 
                 if (!$response['success']) {
                     throw new \Exception("Gateway Error: " . ($response['message'] ?? 'Unknown error'));
