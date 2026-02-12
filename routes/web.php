@@ -63,7 +63,7 @@ use App\Http\Controllers\MoneyActionController;
 
 
 Route::get('/', function () {
-    return redirect('/admin');
+    return redirect('/admin/reservations');
 });
 
 // Deploy endpoint
