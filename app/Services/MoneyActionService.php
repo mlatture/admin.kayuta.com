@@ -285,7 +285,7 @@ class MoneyActionService
         });
     }
 
-    protected function processCardknoxRefund(Reservation $reservation, float $amount, string $reason)
+    public function processCardknoxRefund(Reservation $reservation, float $amount, string $reason)
     {
         $payment = Payment::where('cartid', $reservation->cartid)->whereNotNull('x_ref_num')->latest()->first();
 

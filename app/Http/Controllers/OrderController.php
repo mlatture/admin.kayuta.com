@@ -11,6 +11,7 @@ use App\Models\UpsellRate;
 use App\Models\UpsellText;
 use App\Models\Reservation;
 use App\Models\UpsellOrder;
+use App\Models\AdditionalPayment;
 use Illuminate\Http\Request;
 
 use App\Mail\OrderInvoiceMail;
@@ -329,125 +330,159 @@ class OrderController extends Controller
         $ledger = collect();
         $seq = 0;
 
-        // 1. Charges per reservation (Site Rental + SiteLock + Addons + Tax)
-        foreach ($reservations as $res) {
-            $finalTotal = (float)($res->total ?? 0);
-            $siteLock = (float)($res->sitelock ?? 0);
-            $totalTax = (float)($res->totaltax ?? 0);
-            $addons = $parseAddons($res->addons_json);
-            $addonsTotal = $addons['addons_total'];
+        // 1. Charges and Adjustments per reservation
+    foreach ($reservations as $res) {
+        $resAdditionalPayments = AdditionalPayment::where('reservation_id', $res->id)->get();
+        $resRefunds = DB::table('refunds')->where('reservations_id', $res->id)->get();
+        
+        $additionsTotal = $resAdditionalPayments->sum('total');
+        $reductionsTotal = $resRefunds->sum('amount');
+        
+        $currentTotal = (float)($res->total ?? 0);
+        $originalTotal = $currentTotal - $additionsTotal + $reductionsTotal;
+        
+        $siteLock = (float)($res->sitelock ?? 0);
+        $addons = $parseAddons($res->addons_json);
+        $addonsTotal = $addons['addons_total'];
+        
+        // Derived Original Site Rental
+        $originalSiteRental = round($originalTotal - $siteLock - $addonsTotal, 2);
 
-            // Site Rental = total - sitelock - addonsTotal
-            // Note: total typically includes tax, so we don't subtract tax here
-            $siteRental = round($finalTotal - $siteLock - $addonsTotal, 2);
-
-            $stayLabel = '';
-            try {
-                if (!empty($res->cid) && !empty($res->cod)) {
-                    $stayLabel = ' (' .
-                        \Carbon\Carbon::parse($res->cid)->format('M d') .
-                        '–' .
-                        \Carbon\Carbon::parse($res->cod)->format('M d') .
-                        ')';
-                }
-            } catch (\Throwable $e) {}
-
-            // Site Rental line
-            if ($siteRental != 0.0) {
-                $ledger->push([
-                    'date' => $res->created_at,
-                    'description' => "Site Rental: {$res->siteid}{$stayLabel}",
-                    'type' => 'charge',
-                    'amount' => $siteRental,
-                    'ref' => $res->confirmation_code ?? $res->group_confirmation_code,
-                    'seq' => $seq++
-                ]);
+        $stayLabel = '';
+        try {
+            if (!empty($res->cid) && !empty($res->cod)) {
+                $stayLabel = ' (' .
+                    \Carbon\Carbon::parse($res->cid)->format('M d') .
+                    '–' .
+                    \Carbon\Carbon::parse($res->cod)->format('M d') .
+                    ')';
             }
+        } catch (\Throwable $e) {}
 
-            // Site Lock Fee line
-            if ($siteLock > 0) {
-                $ledger->push([
-                    'date' => $res->created_at,
-                    'description' => "Site Lock Fee ({$res->siteid})",
-                    'type' => 'charge',
-                    'amount' => round($siteLock, 2),
-                    'ref' => null,
-                    'seq' => $seq++
-                ]);
-            }
-
-            // Individual addon lines
-            $addonItems = is_array($addons['items'] ?? null) ? $addons['items'] : [];
-            foreach ($addonItems as $idx => $addon) {
-                if (!is_array($addon)) continue;
-
-                $rawName = (string)($addon['type'] ?? $addon['name'] ?? 'Addon');
-                $qty = (int)($addon['qty'] ?? 1);
-                $price = (float)($addon['total_price'] ?? $addon['price'] ?? 0);
-                $belongsToSite = $addon['site_id'] ?? $res->siteid;
-
-                $suffix = $qty > 1 ? " x{$qty}" : '';
-
-                if ($price != 0.0) {
-                    $ledger->push([
-                        'date' => $res->created_at,
-                        'description' => "Add-on: {$rawName} ({$belongsToSite}){$suffix}",
-                        'type' => 'charge',
-                        'amount' => round($price, 2),
-                        'ref' => null,
-                        'seq' => $seq++
-                    ]);
-                }
-            }
-        }
-
-        // 2. Payment lines
-        $payments = DB::table('payments')->whereIn('cartid', $cartIds)->get();
-        foreach ($payments as $p) {
+        // Original Site Rental line
+        if ($originalSiteRental != 0.0) {
             $ledger->push([
-                'date' => $p->created_at,
-                'description' => "Payment – {$p->method}",
-                'type' => 'payment',
-                'amount' => -abs((float)($p->payment ?? 0)),
-                'ref' => $p->x_ref_num ?? null,
+                'date' => $res->created_at,
+                'description' => "Original Site Rental: {$res->siteid}{$stayLabel}",
+                'type' => 'charge',
+                'status' => 'Original',
+                'amount' => $originalSiteRental,
+                'ref' => $res->confirmation_code ?? $res->group_confirmation_code,
                 'seq' => $seq++
             ]);
         }
 
-        // 3. Refund lines
-        $refunds = DB::table('refunds')->whereIn('cartid', $cartIds)->get();
-        
-        // Create a map of reservation IDs to site names for quick lookup
-        $resSiteMap = $reservations->pluck('site', 'id');
+        // Site Lock Fee line (assuming fixed for now)
+        if ($siteLock > 0) {
+            $ledger->push([
+                'date' => $res->created_at,
+                'description' => "Site Lock Fee ({$res->siteid})",
+                'type' => 'charge',
+                'status' => 'Original',
+                'amount' => round($siteLock, 2),
+                'ref' => null,
+                'seq' => $seq++
+            ]);
+        }
 
-        foreach ($refunds as $r) {
-            if (($r->amount ?? 0) > 0) {
-                $siteLabel = '';
-                if (!empty($r->reservations_id) && isset($resSiteMap[$r->reservations_id])) {
-                    $site = $resSiteMap[$r->reservations_id];
-                    $siteName = $site->sitename ?? $site->siteid ?? 'Site';
-                    $siteLabel = " ({$siteName})";
-                }
-
+        // Add-ons
+        $addonItems = is_array($addons['items'] ?? null) ? $addons['items'] : [];
+        foreach ($addonItems as $idx => $addon) {
+            if (!is_array($addon)) continue;
+            $rawName = (string)($addon['type'] ?? $addon['name'] ?? 'Addon');
+            $qty = (int)($addon['qty'] ?? 1);
+            $price = (float)($addon['total_price'] ?? $addon['price'] ?? 0);
+            $belongsToSite = $addon['site_id'] ?? $res->siteid;
+            $suffix = $qty > 1 ? " x{$qty}" : '';
+            if ($price != 0.0) {
                 $ledger->push([
-                    'date' => $r->created_at,
-                    'description' => 'Refund Issued' . $siteLabel . ($r->reason ? ": {$r->reason}" : ''),
-                    'type' => 'refund',
-                    'amount' => (float)$r->amount,
-                    'ref' => $r->x_ref_num ?? $r->method,
+                    'date' => $res->created_at,
+                    'description' => "Add-on: {$rawName} ({$belongsToSite}){$suffix}",
+                    'type' => 'charge',
+                    'status' => 'Original',
+                    'amount' => round($price, 2),
+                    'ref' => null,
                     'seq' => $seq++
                 ]);
             }
         }
 
-        // Sort ledger chronologically
-        $ledger = $ledger->sortBy('date')->values();
+        // Adjustments (Charges side)
+        foreach ($resAdditionalPayments as $ap) {
+            $ledger->push([
+                'date' => $ap->created_at,
+                'description' => "Adjustment: Upcharge - " . ($ap->comment ?? 'Date/Site Modification'),
+                'type' => 'charge',
+                'status' => 'Adjustment',
+                'amount' => (float)$ap->total,
+                'ref' => $ap->x_ref_num,
+                'seq' => $seq++
+            ]);
+        }
 
-        // Financials
-        $totalCharges = $reservations->sum('total');
-        $totalPayments = $payments->sum('payment');
-        $totalRefunds = $refunds->sum('amount');
-        $balanceDue = $totalCharges - ($totalPayments - $totalRefunds);
+        foreach ($resRefunds as $r) {
+            $ledger->push([
+                'date' => $r->created_at,
+                'description' => "Adjustment: Stay Reduction" . ($r->reason ? " ({$r->reason})" : ''),
+                'type' => 'charge',
+                'status' => 'Adjustment',
+                'amount' => -(float)$r->amount,
+                'ref' => $r->x_ref_num,
+                'seq' => $seq++
+            ]);
+        }
+    }
+
+    // 2. Payment lines
+    $payments = DB::table('payments')->whereIn('cartid', $cartIds)->get();
+    foreach ($payments as $p) {
+        $ledger->push([
+            'date' => $p->created_at,
+            'description' => "Payment – {$p->method}",
+            'type' => 'payment',
+            'status' => 'Approved',
+            'amount' => -abs((float)($p->payment ?? 0)),
+            'ref' => $p->x_ref_num,
+            'seq' => $seq++
+        ]);
+    }
+
+    // 2.1 Additional Payments (Money side)
+    $allAdditionalPayments = AdditionalPayment::whereIn('cartid', $cartIds)->get();
+    foreach ($allAdditionalPayments as $ap) {
+        $ledger->push([
+            'date' => $ap->created_at,
+            'description' => "Additional Payment - " . ($ap->method ?? 'Credit Card'),
+            'type' => 'payment',
+            'status' => 'Approved',
+            'amount' => -abs((float)($ap->total ?? 0)),
+            'ref' => $ap->x_ref_num,
+            'seq' => $seq++
+        ]);
+    }
+
+    // 3. Refund lines (Money side)
+    $allRefunds = DB::table('refunds')->whereIn('cartid', $cartIds)->get();
+    foreach ($allRefunds as $r) {
+        $ledger->push([
+            'date' => $r->created_at,
+            'description' => "Refund Issued" . ($r->reason ? ": {$r->reason}" : ''),
+            'type' => 'refund',
+            'status' => 'Refunded',
+            'amount' => (float)$r->amount,
+            'ref' => $r->x_ref_num ?? $r->method,
+            'seq' => $seq++
+        ]);
+    }
+
+    // Sort ledger chronologically
+    $ledger = $ledger->sortBy('date')->values();
+
+    // Financials
+    $totalCharges = $reservations->sum('total');
+    $totalPayments = $payments->sum('payment') + $allAdditionalPayments->sum('total');
+    $totalRefunds = $allRefunds->sum('amount');
+    $balanceDue = $totalCharges - ($totalPayments - $totalRefunds);
 
         return view('admin.orders.show_unified', compact(
             'reservations',
