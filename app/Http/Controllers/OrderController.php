@@ -462,8 +462,8 @@ class OrderController extends Controller
     }
 
     // 3. Refund lines (Money side)
-    $allRefunds = DB::table('refunds')->whereIn('cartid', $cartIds)->get();
-    foreach ($allRefunds as $r) {
+    $refunds = DB::table('refunds')->whereIn('cartid', $cartIds)->get();
+    foreach ($refunds as $r) {
         $ledger->push([
             'date' => $r->created_at,
             'description' => "Refund Issued" . ($r->reason ? ": {$r->reason}" : ''),
@@ -481,7 +481,7 @@ class OrderController extends Controller
     // Financials
     $totalCharges = $reservations->sum('total');
     $totalPayments = $payments->sum('payment') + $allAdditionalPayments->sum('total');
-    $totalRefunds = $allRefunds->sum('amount');
+    $totalRefunds = $refunds->sum('amount');
     $balanceDue = $totalCharges - ($totalPayments - $totalRefunds);
 
         return view('admin.orders.show_unified', compact(
