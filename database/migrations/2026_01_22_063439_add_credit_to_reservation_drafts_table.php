@@ -14,8 +14,9 @@ return new class extends Migration
     public function up()
     {
         Schema::table('reservation_drafts', function (Blueprint $table) {
-            // $table->decimal('credit_amount', 10, 2)->default(0)->after('grand_total');
-            $table->string('original_cart_id')->nullable()->after('credit_amount');
+            if (!Schema::hasColumn('reservation_drafts', 'original_cart_id')) {
+                $table->string('original_cart_id')->nullable()->after('credit_amount');
+            }
             if (!Schema::hasColumn('reservation_drafts', 'customer_id')) {
                 $table->unsignedBigInteger('customer_id')->nullable()->after('original_cart_id');
             }
