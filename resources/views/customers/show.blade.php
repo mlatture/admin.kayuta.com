@@ -55,7 +55,7 @@
                                 @php $firstReservation = $group->first(); @endphp
                                 <tr class="table-primary">
                                     <td class="text-center">
-                                        <a href="{{ route('admin.reservations.show', $firstReservation->cartid) }}" 
+                                        <a href="{{ route('admin.unified-bookings.show', $firstReservation->group_confirmation_code ?? $firstReservation->xconfnum) }}" 
                                            class="btn btn-info btn-sm">
                                             ⓘ Details
                                         </a>
