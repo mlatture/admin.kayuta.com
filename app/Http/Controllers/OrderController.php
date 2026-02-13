@@ -286,6 +286,7 @@ class OrderController extends Controller
     public function showUnifiedBooking($confirmation_code)
     {
         $reservations = Reservation::where('group_confirmation_code', $confirmation_code)
+            ->orWhere('xconfnum', $confirmation_code)
             ->with(['site', 'user'])
             ->get();
 

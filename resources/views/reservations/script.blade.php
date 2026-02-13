@@ -100,11 +100,11 @@
 
 
         $(document).on('click', '.reservation-details', function() {
-            let cartId = $(this).data('cart-id');
-            if (cartId) {
-                window.location.href = "{{ route('admin.reservations.show', ':id') }}".replace(':id', cartId);
+            let groupCode = $(this).data('group-code');
+            if (groupCode) {
+                window.location.href = "{{ route('admin.unified-bookings.show', ':id') }}".replace(':id', groupCode);
             } else {
-                console.error('Cart ID not found for reservation');
+                console.error('Group code not found for reservation');
             }
         });
 

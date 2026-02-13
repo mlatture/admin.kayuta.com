@@ -96,7 +96,8 @@
             <td colspan="{{ $reservationColSpan }}" class="reservation-details text-center"
                 style="cursor:pointer; background-color: {{ $bgColor }}; color: {{ $textColor }}; border: 4px solid {{ $borderColor }}; "
                 data-reservation-id="{{ $reservation->id }}" data-start-date="{{ $reservation->cid }}"
-                data-end-date="{{ $reservation->cod }}" data-cart-id="{{ $reservation->cartid }}">
+                data-end-date="{{ $reservation->cod }}" data-cart-id="{{ $reservation->cartid }}"
+                data-group-code="{{ $reservation->group_confirmation_code ?? $reservation->xconfnum }}">
                 {{ strtoupper($reservation->lname ?? 'Guest') }}
                 @if($isCancelled)
                     (CANCELLED)
